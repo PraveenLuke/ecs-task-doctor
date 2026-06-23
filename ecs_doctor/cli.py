@@ -124,6 +124,11 @@ def cli() -> None:
     help="AWS region (overrides profile/env default).",
 )
 @click.option(
+    "--profile",
+    default=None,
+    help="AWS named profile from ~/.aws/credentials.",
+)
+@click.option(
     "--json",
     "output_json",
     is_flag=True,
@@ -134,11 +139,12 @@ def diagnose(
     cluster: str,
     service: str,
     region: str | None,
+    profile: str | None,
     output_json: bool,
 ) -> None:
     """Run all diagnostic checks on an ECS service and report the most likely root cause."""
     try:
-        session = boto3.Session(region_name=region)
+        session = boto3.Session(region_name=region, profile_name=profile)
         effective_region = session.region_name or "us-east-1"
 
         try:

@@ -352,3 +352,21 @@ class TestErrorHandling:
             ["diagnose", "--cluster", "c", "--service", "s", "--region", "ap-southeast-1"],
         )
         assert result.exit_code == 0
+
+    @patch(PATCH_SESSION)
+    @patch(PATCH_EVENTS, return_value=[])
+    @patch(PATCH_STOP, return_value=([], []))
+    @patch(PATCH_LOGS, return_value=[])
+    @patch(PATCH_ALB, return_value=[])
+    @patch(PATCH_AGG)
+    def test_profile_option_passed_to_session(self, mock_agg, *mocks):
+        mock_agg.return_value = _root_cause()
+        mock_session = mocks[-1]  # Session is outermost decorator → last positional arg
+        mock_session.return_value = _make_session()
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            ["diagnose", "--cluster", "c", "--service", "s", "--profile", "my-profile"],
+        )
+        assert result.exit_code == 0
+        mock_session.assert_called_once_with(region_name=None, profile_name="my-profile")

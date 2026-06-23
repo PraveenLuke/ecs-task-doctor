@@ -8,7 +8,7 @@ on:
 
 jobs:
   test:
-    name: Test (Python 3.12)
+    name: Checks
     runs-on: ubuntu-latest
 
     steps:
