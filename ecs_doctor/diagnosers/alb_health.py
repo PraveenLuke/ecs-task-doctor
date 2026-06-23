@@ -68,8 +68,8 @@ def _finding_for_target(
             type=FindingType.HEALTH_CHECK_FAIL,
             message=(
                 f"Target {target_id} is in 'initial' state — "
-                f"still waiting for first health check to pass. "
-                f"If this persists, check healthCheckGracePeriodSeconds."
+                "still waiting for first health check to pass. "
+                "If this persists, check healthCheckGracePeriodSeconds."
             ),
             severity=Severity.LOW,
             raw_data={"target": target, "state": state, "tg_arn": tg_arn},

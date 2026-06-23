@@ -117,7 +117,7 @@ def _classify_container(
                 "severity": Severity.MEDIUM,
                 "message": (
                     f"Container '{name}' received SIGTERM but did not exit "
-                    f"gracefully (exit 143). Application may not handle SIGTERM."
+                    "gracefully (exit 143). Application may not handle SIGTERM."
                 ),
             },
         )
@@ -133,7 +133,7 @@ def _classify_container(
                 "severity": Severity.HIGH,
                 "message": (
                     f"Container '{name}' exited cleanly (exit 0) but caused task to stop. "
-                    f"Check CMD/ENTRYPOINT — may be a one-shot script or misconfigured service."
+                    "Check CMD/ENTRYPOINT — may be a one-shot script or misconfigured service."
                 ),
             },
         )

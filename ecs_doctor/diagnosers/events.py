@@ -49,7 +49,7 @@ def _check_deployment_deadlock(svc: dict) -> Finding | None:
             message=(
                 f"Service has desiredCount={desired} but running=0 and pending=0. "
                 f"minimumHealthyPercent={min_pct} and maximumPercent={max_pct} prevent "
-                f"ECS from launching a replacement task — the deployment is deadlocked."
+                "ECS from launching a replacement task — the deployment is deadlocked."
             ),
             severity=Severity.CRITICAL,
             raw_data={

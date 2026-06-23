@@ -1,4 +1,5 @@
 
+import dataclasses
 import time
 from dataclasses import dataclass, field
 
@@ -30,6 +31,15 @@ class DiagnosisResult:
     duration_ms: int = 0
 
 
+def to_json_safe(obj: object) -> object:
+    """Recursively convert dataclasses and lists to JSON-serialisable dicts."""
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return {k: to_json_safe(v) for k, v in dataclasses.asdict(obj).items()}
+    if isinstance(obj, list):
+        return [to_json_safe(i) for i in obj]
+    return obj
+
+
 def run_diagnosis(
     ecs_client,
     logs_client,
@@ -46,12 +56,12 @@ def run_diagnosis(
     start_ms = time.monotonic()
 
     cache = ServiceDataCache(ecs_client)
-    kwargs = dict(
-        cluster=request.cluster,
-        service=request.service,
-        region=request.region,
-        account_id=request.account_id,
-    )
+    kwargs = {
+        "cluster": request.cluster,
+        "service": request.service,
+        "region": request.region,
+        "account_id": request.account_id,
+    }
 
     events_findings = diagnose_events(service_cache=cache, **kwargs)
     stop_findings, task_arns = diagnose_stop_reasons(ecs_client=ecs_client, **kwargs)

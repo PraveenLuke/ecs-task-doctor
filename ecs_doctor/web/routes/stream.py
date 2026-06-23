@@ -28,7 +28,7 @@ async def stream_logs(
                 payload = json.dumps(event)
                 yield f"data: {payload}\n\n"
                 await asyncio.sleep(0)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # NOSONAR python:S2221 broad catch intentional — converts all errors to SSE error events
             yield f"data: {json.dumps({'error': str(exc)})}\n\n"
 
     return StreamingResponse(

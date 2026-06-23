@@ -9,6 +9,7 @@ _HTTP_PORT = 80
 _NFS_PORT = 2049
 _INTERNET_GATEWAY_PREFIX = "igw-"
 _NAT_GATEWAY_PREFIX = "nat-"
+_SOURCE = "network"
 
 
 def _has_outbound_internet(routes: list[dict]) -> bool:
@@ -32,7 +33,7 @@ def _check_subnet_egress(ec2_client, subnet_id: str, region: str, account_id: st
         )
     except ClientError as exc:
         if is_access_denied(exc):
-            return iam_finding("ec2:DescribeRouteTables", f"arn:aws:ec2:{region}:{account_id}:route-table/*", "network")
+            return iam_finding("ec2:DescribeRouteTables", f"arn:aws:ec2:{region}:{account_id}:route-table/*", _SOURCE)
         raise
 
     route_tables = resp.get("RouteTables", [])
@@ -45,11 +46,11 @@ def _check_subnet_egress(ec2_client, subnet_id: str, region: str, account_id: st
             type=FindingType.NETWORK_CONNECTIVITY,
             message=(
                 f"Subnet {subnet_id} has no route to the internet (no IGW or NAT Gateway). "
-                f"Tasks in this subnet cannot pull images, reach Secrets Manager, or call external APIs."
+                "Tasks in this subnet cannot pull images, reach Secrets Manager, or call external APIs."
             ),
             severity=Severity.HIGH,
             raw_data={"subnet_id": subnet_id, "routes": routes},
-            source="network",
+            source=_SOURCE,
         )
     return None
 
@@ -60,7 +61,7 @@ def _check_security_group_egress(ec2_client, sg_id: str, region: str, account_id
         resp = ec2_client.describe_security_groups(GroupIds=[sg_id])
     except ClientError as exc:
         if is_access_denied(exc):
-            return iam_finding("ec2:DescribeSecurityGroups", f"arn:aws:ec2:{region}:{account_id}:security-group/*", "network")
+            return iam_finding("ec2:DescribeSecurityGroups", f"arn:aws:ec2:{region}:{account_id}:security-group/*", _SOURCE)
         raise
 
     groups = resp.get("SecurityGroups", [])
@@ -77,7 +78,7 @@ def _check_security_group_egress(ec2_client, sg_id: str, region: str, account_id
             ),
             severity=Severity.HIGH,
             raw_data={"security_group_id": sg_id},
-            source="network",
+            source=_SOURCE,
         )
     return None
 
@@ -111,11 +112,6 @@ def _get_task_network_details(
         for detail in attachment.get("details", []):
             if detail.get("name") == "subnetId":
                 subnet_ids.append(detail["value"])
-            if detail.get("name") == "networkInterfaceId":
-                pass  # we use subnet for route check
-
-    for override in task.get("overrides", {}).get("containerOverrides", []):
-        pass
 
     vpc_config = task.get("vpcConfiguration", {})
     subnet_ids = subnet_ids or vpc_config.get("subnets", [])
@@ -139,7 +135,7 @@ def diagnose_network(
         return [iam_finding(
             "ecs:DescribeServices",
             service_resource_arn(region, account_id, cluster, service),
-            "network",
+            _SOURCE,
         )]
 
     if not svc:

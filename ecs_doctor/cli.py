@@ -1,5 +1,4 @@
 
-import dataclasses
 import json
 import sys
 
@@ -12,7 +11,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from ecs_doctor.engine import DiagnosisRequest, DiagnosisResult, run_diagnosis
+from ecs_doctor.engine import DiagnosisRequest, DiagnosisResult, run_diagnosis, to_json_safe as _to_json_safe
 from ecs_doctor.models import Finding, MetricSnapshot, RootCause, ServiceConfig, TaskConfig
 
 console = Console(stderr=False)
@@ -175,18 +174,6 @@ def _render_report(result: DiagnosisResult) -> None:
         _render_task_config(result.task_config)
 
     console.print(f"\n[dim]Diagnosis completed in {result.duration_ms}ms.[/dim]\n")
-
-
-# ---------------------------------------------------------------------------
-# JSON serialisation
-# ---------------------------------------------------------------------------
-
-def _to_json_safe(obj: object) -> object:
-    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
-        return {k: _to_json_safe(v) for k, v in dataclasses.asdict(obj).items()}
-    if isinstance(obj, list):
-        return [_to_json_safe(i) for i in obj]
-    return obj
 
 
 # ---------------------------------------------------------------------------

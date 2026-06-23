@@ -1,23 +1,20 @@
 
-import dataclasses
 import json
+from typing import Annotated
 
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from ecs_doctor.engine import DiagnosisRequest, run_diagnosis
+from ecs_doctor.engine import DiagnosisRequest, run_diagnosis, to_json_safe
 
 router = APIRouter()
 
-
-def _to_json_safe(obj: object) -> object:
-    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
-        return {k: _to_json_safe(v) for k, v in dataclasses.asdict(obj).items()}
-    if isinstance(obj, list):
-        return [_to_json_safe(i) for i in obj]
-    return obj
+_RESPONSES_401_500 = {
+    401: {"description": "No AWS credentials found"},
+    500: {"description": "Diagnosis failed — check cluster/service names and IAM permissions"},
+}
 
 
 def _build_clients(region: str, profile: str | None) -> tuple:
@@ -39,28 +36,28 @@ async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
 
-@router.post("/diagnose", response_class=HTMLResponse)
+@router.post("/diagnose", response_class=HTMLResponse, responses=_RESPONSES_401_500)
 async def diagnose_html(
     request: Request,
-    cluster: str = Form(...),
-    service: str = Form(...),
-    region: str = Form("us-east-1"),
-    profile: str = Form(""),
+    cluster: Annotated[str, Form()],
+    service: Annotated[str, Form()],
+    region: Annotated[str, Form()] = "us-east-1",
+    profile: Annotated[str, Form()] = "",
 ):
     from ecs_doctor.web.app import templates
     try:
         ecs, logs, elb, cw, account_id = _build_clients(region, profile or None)
         req = DiagnosisRequest(cluster=cluster, service=service, region=region, account_id=account_id)
         result = run_diagnosis(ecs_client=ecs, logs_client=logs, elb_client=elb, cw_client=cw, request=req)
-    except NoCredentialsError:
-        raise HTTPException(status_code=401, detail="No AWS credentials found.")
+    except NoCredentialsError as exc:
+        raise HTTPException(status_code=401, detail="No AWS credentials found.") from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return templates.TemplateResponse("report.html", {"request": request, "result": result})
 
 
-@router.get("/api/diagnose")
+@router.get("/api/diagnose", responses=_RESPONSES_401_500)
 async def diagnose_json(
     cluster: str,
     service: str,
@@ -71,9 +68,9 @@ async def diagnose_json(
         ecs, logs, elb, cw, account_id = _build_clients(region, profile)
         req = DiagnosisRequest(cluster=cluster, service=service, region=region, account_id=account_id)
         result = run_diagnosis(ecs_client=ecs, logs_client=logs, elb_client=elb, cw_client=cw, request=req)
-    except NoCredentialsError:
-        raise HTTPException(status_code=401, detail="No AWS credentials found.")
+    except NoCredentialsError as exc:
+        raise HTTPException(status_code=401, detail="No AWS credentials found.") from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    return JSONResponse(content=json.loads(json.dumps(_to_json_safe(result), default=str)))
+    return JSONResponse(content=json.loads(json.dumps(to_json_safe(result), default=str)))
