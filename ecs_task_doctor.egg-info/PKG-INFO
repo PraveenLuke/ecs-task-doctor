@@ -1,0 +1,299 @@
+Metadata-Version: 2.4
+Name: ecs-task-doctor
+Version: 0.1.0
+Summary: CLI tool to diagnose why ECS tasks and services are failing
+Author-email: Praveen Rajkoilraj <praveenrajkoilraj@gmail.com>
+License: MIT License
+        
+        Copyright (c) 2026 Praveen Rajkoilraj
+        
+        Permission is hereby granted, free of charge, to any person obtaining a copy
+        of this software and associated documentation files (the "Software"), to deal
+        in the Software without restriction, including without limitation the rights
+        to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+        copies of the Software, and to permit persons to whom the Software is
+        furnished to do so, subject to the following conditions:
+        
+        The above copyright notice and this permission notice shall be included in all
+        copies or substantial portions of the Software.
+        
+        THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+        IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+        FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+        AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+        LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+        OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+        SOFTWARE.
+        
+Keywords: aws,ecs,devops,debugging,cli,diagnosis
+Classifier: Development Status :: 3 - Alpha
+Classifier: Environment :: Console
+Classifier: Intended Audience :: Developers
+Classifier: Intended Audience :: System Administrators
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: System :: Systems Administration
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: boto3>=1.26
+Requires-Dist: botocore>=1.29
+Requires-Dist: rich>=13.0
+Requires-Dist: click>=8.0
+Provides-Extra: dev
+Requires-Dist: moto[ecs,elbv2,logs,sts]>=4.0; extra == "dev"
+Requires-Dist: pytest>=7.0; extra == "dev"
+Requires-Dist: pytest-cov>=4.0; extra == "dev"
+Dynamic: license-file
+
+# ecs-task-doctor
+
+[![PyPI version](https://img.shields.io/pypi/v/ecs-task-doctor.svg)](https://pypi.org/project/ecs-task-doctor/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
+
+**Diagnose why your ECS service is failing — in one command.**
+
+---
+
+## The Problem
+
+ECS troubleshooting today means manually correlating four separate AWS data sources every single incident, by hand:
+
+1. **ECS DescribeServices events** — was there a placement failure? a deployment rollback?
+2. **DescribeTasks stoppedReason + container exit codes** — OOM? image pull failure? missing secret?
+3. **CloudWatch Logs** — what was the application printing before it crashed?
+4. **ALB target health** — is the load balancer even reaching the container?
+
+You're tabbing between four AWS console screens at 2am, each one showing raw data with no correlation, trying to figure out whether it's OOM, a bad image tag, a broken health check path, or a VPC security group blocking the ALB. Every time.
+
+There is currently no open-source tool that aggregates these four signals into a single root-cause report. The AWS CLI, boto3 scripts, and the ECS console only expose raw data per service — they do not correlate findings across signals or tell you what to fix.
+
+`ecs-task-doctor` does that.
+
+---
+
+## Why This Exists
+
+> "It's 2am. PagerDuty woke you up. `DesiredCount: 3, RunningCount: 0`. You open the ECS console, see 'essential container in task exited', switch to CloudWatch Logs to find the crash, switch to the target group to check health, go back to the service events to see if it's been flapping for 20 minutes or 20 seconds. Thirty minutes later you realize it was a DockerHub rate limit. You've done this exact sequence fifteen times this year."
+
+`ecs-task-doctor` runs all four checks in parallel and tells you the most likely root cause with a confidence score and a suggested fix.
+
+---
+
+## Installation
+
+```bash
+# Recommended: install with pipx for an isolated environment
+pipx install ecs-task-doctor
+
+# Or with pip
+pip install ecs-task-doctor
+
+# Development install (includes test dependencies)
+git clone https://github.com/yourname/ecs-task-doctor
+cd ecs-task-doctor
+pip install -e ".[dev]"
+```
+
+---
+
+## Usage
+
+```bash
+ecs-doctor diagnose --cluster my-cluster --service my-service
+
+# Specify region explicitly
+ecs-doctor diagnose --cluster my-cluster --service my-service --region us-west-2
+
+# Machine-readable JSON output (for CI, Slack webhooks, etc.)
+ecs-doctor diagnose --cluster my-cluster --service my-service --json
+```
+
+### AWS Credentials
+
+`ecs-task-doctor` uses the standard boto3 credential chain — no custom auth required:
+
+1. Environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`)
+2. AWS named profiles (`~/.aws/credentials`)
+3. ECS task role / EC2 instance role (when running on AWS infrastructure)
+
+---
+
+## Example Output
+
+```
+────────────────── ECS Task Doctor — prod-cluster / payments-service ──────────────────
+
+╭─ Root Cause ────────────────────────────────────────────────────────────────────────╮
+│                                                                                      │
+│  Container is being OOM-killed (out of memory)                                       │
+│                                                                                      │
+│  Confidence: 97%                                                                     │
+│                                                                                      │
+│  Suggested fix:                                                                      │
+│  Increase the container's memory reservation in the task definition.                  │
+│  Enable CloudWatch Container Insights to track memory utilization trends.             │
+│  Profile the application for memory leaks — common causes include unbounded caches,  │
+│  unclosed DB connections, and JVM heap misconfiguration.                              │
+│                                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+
+╭─ Supporting Evidence ─────────────────────────────────────────────────────────────────╮
+│ Source        │ Type          │ Severity │ Message                                    │
+│ stop_reasons  │ oom_killed    │ CRITICAL │ Container 'app' OOM-killed (exit 137).      │
+│               │               │          │ stoppedReason: Essential container in task  │
+│               │               │          │ exited (3 tasks affected)                  │
+│ logs          │ log_crash_sig │ CRITICAL │ [app] OOM in logs detected in logs         │
+│               │               │          │ (task abc123)                              │
+│ events        │ task_thrash   │ CRITICAL │ Crash loop detected: 4 start(s) and        │
+│               │               │          │ 4 stop(s) in the last 20 events.           │
+╰───────────────────────────────────────────────────────────────────────────────────────╯
+
+(1 additional finding(s) not shown above — run with --json to see all.)
+```
+
+### JSON output (`--json`)
+
+```json
+{
+  "cluster": "prod-cluster",
+  "service": "payments-service",
+  "region": "us-east-1",
+  "root_cause": {
+    "cause": "Container is being OOM-killed (out of memory)",
+    "confidence": 0.97,
+    "suggested_fix": "Increase the container's memory reservation...",
+    "evidence": [...]
+  },
+  "all_findings": [...]
+}
+```
+
+---
+
+## Diagnostic Checks
+
+`ecs-task-doctor` runs four diagnosers and feeds their findings into a root-cause aggregator:
+
+| Diagnoser | AWS API | What it catches |
+|-----------|---------|-----------------|
+| **events** | `ecs:DescribeServices` | Placement failures, health check failures, deployment rollbacks, crash loops |
+| **stop_reasons** | `ecs:ListTasks`, `ecs:DescribeTasks` | OOM (exit 137/139), image pull failures, missing secrets (`ResourceInitializationError`), non-zero exits, premature exits (exit 0), SIGTERM not handled (exit 143) |
+| **logs** | `logs:GetLogEvents` | Python/Java/Go/Node tracebacks, connection refused, DNS failures, TLS errors, wrong CPU arch (`exec format error`), missing files/binaries, DB fatal errors |
+| **alb_health** | `elasticloadbalancing:DescribeTargetHealth` | Unhealthy targets — timeout, connection refused, non-2xx health check response |
+
+### Root Cause Categories
+
+The aggregator maps findings to these root causes, ranked by confidence:
+
+- Container is being OOM-killed
+- ECS cannot pull the container image (registry auth, rate limit, wrong tag)
+- Task cannot initialize — secret or config resource missing or inaccessible
+- Insufficient cluster capacity (placement failure)
+- ALB targets unhealthy
+- Container/ALB health checks failing
+- Deployment failed — circuit breaker triggered
+- Application crash-looping
+- Application exiting with non-zero code
+- Container not handling SIGTERM (graceful shutdown failure)
+- Application crash signature in logs
+
+---
+
+## Required IAM Permissions
+
+Grant these permissions to the IAM role or user running `ecs-doctor`:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ecs:DescribeServices",
+        "ecs:DescribeTasks",
+        "ecs:ListTasks",
+        "ecs:DescribeTaskDefinition"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "logs:GetLogEvents"
+      ],
+      "Resource": "arn:aws:logs:*:*:log-group:/ecs/*:*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "elasticloadbalancing:DescribeTargetHealth"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "sts:GetCallerIdentity"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+**Permission handling:** If any permission is missing, `ecs-doctor` catches the `AccessDenied` error, tells you exactly which IAM action and resource ARN to add, and continues running the remaining diagnosers — it never crashes on a missing permission.
+
+---
+
+## Roadmap
+
+- [ ] **IAM policy auto-generator** — output a ready-to-apply IAM policy statement for the exact resources diagnosed
+- [ ] **Slack / webhook output** — `--webhook <url>` to post findings to a Slack channel or incident management system
+- [ ] **Multi-service batch scan** — `ecs-doctor scan --cluster my-cluster` to check all services in a cluster
+- [ ] **`--watch` mode** — poll and re-diagnose every N seconds until the service is healthy
+- [ ] **CloudWatch Container Insights** integration — pull memory and CPU utilization metrics to support OOM diagnosis
+- [ ] **ECS Exec integration** — optionally open a shell into a failing container for live debugging
+- [ ] **Cost impact report** — estimate how much a crash-looping service has cost during the incident window
+- [ ] **GitHub Actions output format** — emit findings as GitHub annotations
+
+---
+
+## Development
+
+```bash
+# Install dev dependencies
+pip install -e ".[dev]"
+
+# Run tests
+pytest tests/ -v
+
+# Run tests with coverage
+pytest tests/ -v --cov=ecs_doctor --cov-report=term-missing
+```
+
+### Project Structure
+
+```
+ecs_doctor/
+├── cli.py              # Click CLI entrypoint + rich renderer
+├── models.py           # Finding, RootCause dataclasses
+├── aggregator.py       # Root-cause scoring and ranking
+└── diagnosers/
+    ├── events.py       # ECS service events parser
+    ├── stop_reasons.py # Task stop reason classifier
+    ├── logs.py         # CloudWatch log crash pattern matcher
+    └── alb_health.py   # ALB target health checker
+```
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).

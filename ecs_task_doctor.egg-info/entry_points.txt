@@ -1,0 +1,2 @@
+[console_scripts]
+ecs-doctor = ecs_doctor.cli:cli
