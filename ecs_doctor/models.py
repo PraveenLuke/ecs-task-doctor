@@ -17,6 +17,7 @@ class FindingType(str, Enum):
     HEALTH_CHECK_FAIL = "health_check_failure"
     TASK_THRASHING = "task_thrashing"
     DEPLOYMENT_ROLLBACK = "deployment_rollback"
+    DEPLOYMENT_CONFIG_DEADLOCK = "deployment_config_deadlock"
     # stop_reasons.py
     OOM_KILLED = "oom_killed"
     NON_ZERO_EXIT = "non_zero_exit"
@@ -25,10 +26,21 @@ class FindingType(str, Enum):
     ESSENTIAL_EXITED = "essential_container_exited"
     PREMATURE_EXIT = "premature_exit"
     GRACEFUL_SHUTDOWN_FAIL = "graceful_shutdown_failure"
+    SPOT_INTERRUPTED = "spot_interrupted"
+    TASK_FAILED_TO_START = "task_failed_to_start"
     # logs.py
     LOG_CRASH_SIGNATURE = "log_crash_signature"
+    DISK_ERROR = "disk_error"
+    EFS_MOUNT_FAILURE = "efs_mount_failure"
     # alb_health.py
     ALB_UNHEALTHY = "alb_unhealthy_target"
+    # metrics.py
+    HIGH_CPU_UTILIZATION = "high_cpu_utilization"
+    HIGH_MEMORY_UTILIZATION = "high_memory_utilization"
+    # config.py
+    INVALID_TASK_CONFIG = "invalid_task_config"
+    # network.py
+    NETWORK_CONNECTIVITY = "network_connectivity"
     # shared
     IAM_DENIED = "iam_access_denied"
 
@@ -48,3 +60,93 @@ class RootCause:
     confidence: float
     evidence: list[Finding]
     suggested_fix: str
+
+
+# ---------------------------------------------------------------------------
+# Metrics models
+# ---------------------------------------------------------------------------
+
+@dataclass
+class MetricPoint:
+    timestamp: str
+    average: float
+    maximum: float
+    unit: str
+
+
+@dataclass
+class MetricSnapshot:
+    cluster: str
+    service: str
+    period_seconds: int
+    lookback_hours: int
+    cpu_avg_percent: float | None
+    cpu_max_percent: float | None
+    memory_avg_percent: float | None
+    memory_max_percent: float | None
+    cpu_datapoints: list[MetricPoint] = field(default_factory=list)
+    memory_datapoints: list[MetricPoint] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Configuration models
+# ---------------------------------------------------------------------------
+
+@dataclass
+class HealthCheckConfig:
+    command: list[str]
+    interval_seconds: int
+    timeout_seconds: int
+    retries: int
+    start_period_seconds: int
+
+
+@dataclass
+class ContainerConfig:
+    name: str
+    image: str
+    cpu: int
+    memory: int | None
+    memory_reservation: int | None
+    essential: bool
+    environment: dict[str, str]
+    health_check: HealthCheckConfig | None
+    log_driver: str
+    log_group: str | None
+
+
+@dataclass
+class DeploymentConfig:
+    minimum_healthy_percent: int
+    maximum_percent: int
+    circuit_breaker_enabled: bool
+    rollback_on_failure: bool
+
+
+@dataclass
+class TaskConfig:
+    task_definition_arn: str
+    family: str
+    revision: int
+    cpu: str
+    memory: str
+    network_mode: str
+    launch_type: str
+    execution_role_arn: str | None
+    task_role_arn: str | None
+    containers: list[ContainerConfig]
+
+
+@dataclass
+class ServiceConfig:
+    service_arn: str
+    service_name: str
+    cluster_arn: str
+    desired_count: int
+    running_count: int
+    pending_count: int
+    launch_type: str
+    platform_version: str | None
+    deployment_config: DeploymentConfig
+    capacity_provider_strategy: list[dict]
+    health_check_grace_period_seconds: int | None

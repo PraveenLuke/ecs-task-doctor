@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h2>Run Diagnosis</h2>
+  <form hx-post="/diagnose" hx-target="#result" hx-swap="innerHTML" hx-indicator="#spinner">
+    <div class="field">
+      <label for="cluster">ECS Cluster</label>
+      <input id="cluster" name="cluster" type="text" placeholder="prod-cluster" required>
+    </div>
+    <div class="field">
+      <label for="service">ECS Service</label>
+      <input id="service" name="service" type="text" placeholder="api" required>
+    </div>
+    <div class="field">
+      <label for="region">AWS Region</label>
+      <input id="region" name="region" type="text" value="us-east-1">
+    </div>
+    <div class="field">
+      <label for="profile">AWS Profile <span class="optional">(optional)</span></label>
+      <input id="profile" name="profile" type="text" placeholder="default">
+    </div>
+    <button type="submit">Diagnose</button>
+    <span id="spinner" class="htmx-indicator">Running…</span>
+  </form>
+</section>
+
+<section id="result"></section>
+
+<section class="card stream-section" style="display:none" id="stream-panel">
+  <h2>Live Log Stream</h2>
+  <pre id="log-output"></pre>
+  <button onclick="stopStream()">Stop</button>
+</section>
+{% endblock %}

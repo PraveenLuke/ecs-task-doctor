@@ -10,6 +10,7 @@ from tests.conftest import (
     access_denied_error,
     make_ecs_client,
     make_elbv2_client,
+    make_service_cache,
 )
 
 _TG_ARN = f"arn:aws:elasticloadbalancing:{REGION}:{ACCOUNT}:targetgroup/my-tg/abc123"
@@ -41,6 +42,11 @@ def _target_health(state: str, reason: str = "", description: str = "") -> dict:
     }
 
 
+def _call(ecs, elb):
+    """Convenience wrapper for the new diagnose_alb_health(service_cache, elbv2_client, ...) signature."""
+    return diagnose_alb_health(make_service_cache(ecs), elb, CLUSTER, SERVICE, REGION, ACCOUNT)
+
+
 # ---------------------------------------------------------------------------
 # No load balancers
 # ---------------------------------------------------------------------------
@@ -48,7 +54,7 @@ def _target_health(state: str, reason: str = "", description: str = "") -> dict:
 def test_no_load_balancers_returns_empty():
     ecs = make_ecs_client(describe_services=_svc_resp([]))
     elb = make_elbv2_client()
-    findings = diagnose_alb_health(ecs, elb, CLUSTER, SERVICE, REGION, ACCOUNT)
+    findings = _call(ecs, elb)
     assert findings == []
     elb.describe_target_health.assert_not_called()
 
@@ -60,7 +66,7 @@ def test_no_load_balancers_returns_empty():
 def test_all_healthy_returns_empty():
     ecs = make_ecs_client(describe_services=_svc_resp([_lb()]))
     elb = make_elbv2_client(describe_target_health=_target_health("healthy"))
-    findings = diagnose_alb_health(ecs, elb, CLUSTER, SERVICE, REGION, ACCOUNT)
+    findings = _call(ecs, elb)
     assert findings == []
 
 
@@ -77,7 +83,7 @@ def test_unhealthy_timeout():
             description="Request timed out",
         )
     )
-    findings = diagnose_alb_health(ecs, elb, CLUSTER, SERVICE, REGION, ACCOUNT)
+    findings = _call(ecs, elb)
     assert len(findings) == 1
     assert findings[0].type == FindingType.ALB_UNHEALTHY
     assert findings[0].severity == Severity.CRITICAL
@@ -93,7 +99,7 @@ def test_unhealthy_connection_error():
     elb = make_elbv2_client(
         describe_target_health=_target_health("unhealthy", reason="Target.ConnectionError")
     )
-    findings = diagnose_alb_health(ecs, elb, CLUSTER, SERVICE, REGION, ACCOUNT)
+    findings = _call(ecs, elb)
     assert any(f.type == FindingType.ALB_UNHEALTHY for f in findings)
     f = next(x for x in findings if x.type == FindingType.ALB_UNHEALTHY)
     assert "refused" in f.message.lower() or "connection" in f.message.lower()
@@ -108,7 +114,7 @@ def test_unhealthy_failed_health_checks():
     elb = make_elbv2_client(
         describe_target_health=_target_health("unhealthy", reason="Target.FailedHealthChecks")
     )
-    findings = diagnose_alb_health(ecs, elb, CLUSTER, SERVICE, REGION, ACCOUNT)
+    findings = _call(ecs, elb)
     assert any(f.type == FindingType.ALB_UNHEALTHY for f in findings)
     f = next(x for x in findings if x.type == FindingType.ALB_UNHEALTHY)
     assert "2xx" in f.message or "non-2xx" in f.message
@@ -121,7 +127,7 @@ def test_unhealthy_failed_health_checks():
 def test_initial_state_emits_advisory():
     ecs = make_ecs_client(describe_services=_svc_resp([_lb()]))
     elb = make_elbv2_client(describe_target_health=_target_health("initial"))
-    findings = diagnose_alb_health(ecs, elb, CLUSTER, SERVICE, REGION, ACCOUNT)
+    findings = _call(ecs, elb)
     assert any(f.severity == Severity.LOW for f in findings)
     assert any("initial" in f.message.lower() for f in findings)
 
@@ -133,7 +139,7 @@ def test_initial_state_emits_advisory():
 def test_no_target_group_arn_skipped():
     ecs = make_ecs_client(describe_services=_svc_resp([_lb(tg_arn=None)]))
     elb = make_elbv2_client()
-    findings = diagnose_alb_health(ecs, elb, CLUSTER, SERVICE, REGION, ACCOUNT)
+    findings = _call(ecs, elb)
     assert findings == []
     elb.describe_target_health.assert_not_called()
 
@@ -151,7 +157,7 @@ def test_unknown_unhealthy_reason():
             description="Something went wrong",
         )
     )
-    findings = diagnose_alb_health(ecs, elb, CLUSTER, SERVICE, REGION, ACCOUNT)
+    findings = _call(ecs, elb)
     assert any(f.type == FindingType.ALB_UNHEALTHY for f in findings)
 
 
@@ -164,7 +170,7 @@ def test_access_denied_on_describe_target_health():
     elb = make_elbv2_client(
         describe_target_health=access_denied_error("DescribeTargetHealth", "AccessDenied")
     )
-    findings = diagnose_alb_health(ecs, elb, CLUSTER, SERVICE, REGION, ACCOUNT)
+    findings = _call(ecs, elb)
     assert any(f.type == FindingType.IAM_DENIED for f in findings)
     f = next(x for x in findings if x.type == FindingType.IAM_DENIED)
     assert "elasticloadbalancing:DescribeTargetHealth" in f.message
@@ -180,7 +186,7 @@ def test_access_denied_on_describe_services():
         describe_services=access_denied_error("DescribeServices", "AccessDeniedException")
     )
     elb = make_elbv2_client()
-    findings = diagnose_alb_health(ecs, elb, CLUSTER, SERVICE, REGION, ACCOUNT)
+    findings = _call(ecs, elb)
     assert any(f.type == FindingType.IAM_DENIED for f in findings)
 
 
@@ -193,6 +199,6 @@ def test_raw_data_contains_tg_arn():
     elb = make_elbv2_client(
         describe_target_health=_target_health("unhealthy", reason="Target.Timeout")
     )
-    findings = diagnose_alb_health(ecs, elb, CLUSTER, SERVICE, REGION, ACCOUNT)
+    findings = _call(ecs, elb)
     f = next(x for x in findings if x.type == FindingType.ALB_UNHEALTHY)
     assert f.raw_data["tg_arn"] == _TG_ARN

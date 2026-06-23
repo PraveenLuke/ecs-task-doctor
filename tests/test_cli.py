@@ -6,6 +6,7 @@ from botocore.exceptions import ClientError, NoCredentialsError
 from click.testing import CliRunner
 
 from ecs_doctor.cli import _confidence_color, _to_json_safe, cli
+from ecs_doctor.engine import DiagnosisRequest, DiagnosisResult
 from ecs_doctor.models import Finding, FindingType, RootCause, Severity
 
 
@@ -31,6 +32,26 @@ def _finding(ftype=FindingType.OOM_KILLED, sev=Severity.CRITICAL) -> Finding:
     return Finding(type=ftype, message="test msg", severity=sev, source="test")
 
 
+def _make_result(
+    root_cause=None,
+    all_findings=None,
+    cluster="c",
+    service="s",
+    region="us-east-1",
+    account_id="123456789012",
+) -> DiagnosisResult:
+    if root_cause is None:
+        root_cause = _root_cause()
+    if all_findings is None:
+        all_findings = []
+    return DiagnosisResult(
+        request=DiagnosisRequest(cluster=cluster, service=service, region=region, account_id=account_id),
+        root_cause=root_cause,
+        all_findings=all_findings,
+        duration_ms=42,
+    )
+
+
 def _make_session(region="us-east-1", account="123456789012", sts_error=None):
     session = MagicMock()
     session.region_name = region
@@ -45,6 +66,23 @@ def _make_session(region="us-east-1", account="123456789012", sts_error=None):
 
     session.client.side_effect = _client
     return session
+
+
+PATCH_SESSION = "ecs_doctor.cli.boto3.Session"
+PATCH_ENGINE = "ecs_doctor.cli.run_diagnosis"
+
+
+def _invoke(*args, root_cause=None, all_findings=None):
+    """Run `ecs-doctor diagnose` through CliRunner with engine patched."""
+    runner = CliRunner()
+    with (
+        patch(PATCH_SESSION) as ms,
+        patch(PATCH_ENGINE) as me,
+    ):
+        ms.return_value = _make_session()
+        me.return_value = _make_result(root_cause=root_cause, all_findings=all_findings or [])
+        result = runner.invoke(cli, list(args))
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -98,30 +136,6 @@ class TestToJsonSafe:
 # CLI integration tests via CliRunner
 # ---------------------------------------------------------------------------
 
-PATCH_SESSION = "ecs_doctor.cli.boto3.Session"
-PATCH_EVENTS = "ecs_doctor.cli.diagnose_events"
-PATCH_STOP = "ecs_doctor.cli.diagnose_stop_reasons"
-PATCH_LOGS = "ecs_doctor.cli.diagnose_logs"
-PATCH_ALB = "ecs_doctor.cli.diagnose_alb_health"
-PATCH_AGG = "ecs_doctor.cli.aggregate"
-
-
-def _invoke(*args, **patches):
-    """Run `ecs-doctor diagnose` through CliRunner, applying caller-supplied patches."""
-    runner = CliRunner(mix_stderr=False)
-    with (
-        patch(PATCH_SESSION, **patches.get("session_patch", {})) as ms,
-        patch(PATCH_EVENTS, return_value=[]) as _me,
-        patch(PATCH_STOP, return_value=([], [])) as _mst,
-        patch(PATCH_LOGS, return_value=[]) as _ml,
-        patch(PATCH_ALB, return_value=[]) as _ma,
-        patch(PATCH_AGG) as ma,
-    ):
-        ms.return_value = _make_session()
-        ma.return_value = _root_cause()
-        result = runner.invoke(cli, list(args))
-    return result
-
 
 class TestHelp:
     def test_top_level_help(self):
@@ -141,183 +155,113 @@ class TestHelp:
 
 
 class TestDiagnoseRichOutput:
-    @patch(PATCH_SESSION)
-    @patch(PATCH_EVENTS, return_value=[])
-    @patch(PATCH_STOP, return_value=([], []))
-    @patch(PATCH_LOGS, return_value=[])
-    @patch(PATCH_ALB, return_value=[])
-    @patch(PATCH_AGG)
-    def test_exit_zero_on_success(self, mock_agg, *mocks):
-        mock_agg.return_value = _root_cause()
-        mocks[-1].return_value = _make_session()  # Session mock is last positional
-        runner = CliRunner()
-        result = runner.invoke(cli, ["diagnose", "--cluster", "c", "--service", "s"])
+    def test_exit_zero_on_success(self):
+        result = _invoke("diagnose", "--cluster", "c", "--service", "s")
         assert result.exit_code == 0
 
-    @patch(PATCH_SESSION)
-    @patch(PATCH_EVENTS, return_value=[])
-    @patch(PATCH_STOP, return_value=([], []))
-    @patch(PATCH_LOGS, return_value=[])
-    @patch(PATCH_ALB, return_value=[])
-    @patch(PATCH_AGG)
-    def test_output_contains_root_cause(self, mock_agg, *mocks):
-        mock_agg.return_value = _root_cause(cause="Container OOM-killed")
-        mocks[-1].return_value = _make_session()
-        runner = CliRunner()
-        result = runner.invoke(cli, ["diagnose", "--cluster", "c", "--service", "s"])
+    def test_output_contains_root_cause(self):
+        rc = _root_cause(cause="Container OOM-killed")
+        result = _invoke("diagnose", "--cluster", "c", "--service", "s", root_cause=rc)
         assert "Root Cause" in result.output
         assert "Container OOM-killed" in result.output
 
-    @patch(PATCH_SESSION)
-    @patch(PATCH_EVENTS, return_value=[])
-    @patch(PATCH_STOP, return_value=([], []))
-    @patch(PATCH_LOGS, return_value=[])
-    @patch(PATCH_ALB, return_value=[])
-    @patch(PATCH_AGG)
-    def test_evidence_table_rendered_when_evidence_present(self, mock_agg, *mocks):
+    def test_evidence_table_rendered_when_evidence_present(self):
         evidence = [_finding()]
-        mock_agg.return_value = _root_cause(evidence=evidence)
-        mocks[-1].return_value = _make_session()
-        runner = CliRunner()
-        result = runner.invoke(cli, ["diagnose", "--cluster", "c", "--service", "s"])
+        rc = _root_cause(evidence=evidence)
+        result = _invoke("diagnose", "--cluster", "c", "--service", "s", root_cause=rc, all_findings=evidence)
         assert result.exit_code == 0
         assert "Supporting Evidence" in result.output
 
-    @patch(PATCH_SESSION)
-    @patch(PATCH_EVENTS, return_value=[])
-    @patch(PATCH_STOP, return_value=([], []))
-    @patch(PATCH_LOGS, return_value=[])
-    @patch(PATCH_ALB, return_value=[])
-    @patch(PATCH_AGG)
-    def test_extra_findings_note_shown(self, mock_agg, *mocks):
-        # evidence has 1 finding; all_findings has 2 → "1 additional finding" note
+    def test_extra_findings_note_shown(self):
         all_findings = [_finding(), _finding(FindingType.ALB_UNHEALTHY)]
         evidence = [all_findings[0]]
-        mock_agg.return_value = _root_cause(evidence=evidence)
-        mocks[-1].return_value = _make_session()
-
-        # Override events to return 2 findings total
-        with (
-            patch(PATCH_SESSION, return_value=_make_session()),
-            patch(PATCH_EVENTS, return_value=all_findings),
-            patch(PATCH_STOP, return_value=([], [])),
-            patch(PATCH_LOGS, return_value=[]),
-            patch(PATCH_ALB, return_value=[]),
-            patch(PATCH_AGG, return_value=_root_cause(evidence=evidence)),
-        ):
-            runner = CliRunner()
-            result = runner.invoke(
-                cli, ["diagnose", "--cluster", "c", "--service", "s"]
-            )
+        rc = _root_cause(evidence=evidence)
+        result = _invoke("diagnose", "--cluster", "c", "--service", "s", root_cause=rc, all_findings=all_findings)
         assert result.exit_code == 0
         assert "additional finding" in result.output
 
 
 class TestDiagnoseJsonOutput:
-    @patch(PATCH_SESSION)
-    @patch(PATCH_EVENTS, return_value=[])
-    @patch(PATCH_STOP, return_value=([], []))
-    @patch(PATCH_LOGS, return_value=[])
-    @patch(PATCH_ALB, return_value=[])
-    @patch(PATCH_AGG)
-    def test_json_flag_produces_valid_json(self, mock_agg, *mocks):
-        mock_agg.return_value = _root_cause()
-        mocks[-1].return_value = _make_session()
+    def test_json_flag_produces_valid_json(self):
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["diagnose", "--cluster", "prod", "--service", "svc", "--json"]
-        )
+        with (
+            patch(PATCH_SESSION) as ms,
+            patch(PATCH_ENGINE) as me,
+        ):
+            ms.return_value = _make_session()
+            me.return_value = _make_result(cluster="prod", service="svc")
+            result = runner.invoke(cli, ["diagnose", "--cluster", "prod", "--service", "svc", "--json"])
         assert result.exit_code == 0
         data = json.loads(result.output)
-        assert data["cluster"] == "prod"
-        assert data["service"] == "svc"
+        assert data["request"]["cluster"] == "prod"
+        assert data["request"]["service"] == "svc"
         assert "root_cause" in data
         assert "all_findings" in data
 
-    @patch(PATCH_SESSION)
-    @patch(PATCH_EVENTS, return_value=[])
-    @patch(PATCH_STOP, return_value=([], []))
-    @patch(PATCH_LOGS, return_value=[])
-    @patch(PATCH_ALB, return_value=[])
-    @patch(PATCH_AGG)
-    def test_json_output_contains_root_cause_fields(self, mock_agg, *mocks):
-        mock_agg.return_value = _root_cause(cause="OOM", confidence=0.97)
-        mocks[-1].return_value = _make_session()
+    def test_json_output_contains_root_cause_fields(self):
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["diagnose", "--cluster", "c", "--service", "s", "--json"]
-        )
+        with (
+            patch(PATCH_SESSION) as ms,
+            patch(PATCH_ENGINE) as me,
+        ):
+            ms.return_value = _make_session()
+            me.return_value = _make_result(root_cause=_root_cause(cause="OOM", confidence=0.97))
+            result = runner.invoke(cli, ["diagnose", "--cluster", "c", "--service", "s", "--json"])
         data = json.loads(result.output)
         rc = data["root_cause"]
         assert rc["cause"] == "OOM"
         assert rc["confidence"] == 0.97
 
-    @patch(PATCH_SESSION)
-    @patch(PATCH_EVENTS, return_value=[])
-    @patch(PATCH_STOP, return_value=([], []))
-    @patch(PATCH_LOGS, return_value=[])
-    @patch(PATCH_ALB, return_value=[])
-    @patch(PATCH_AGG)
-    def test_json_includes_all_findings(self, mock_agg, *mocks):
+    def test_json_includes_all_findings(self):
         findings = [_finding(), _finding(FindingType.ALB_UNHEALTHY)]
-        mock_agg.return_value = _root_cause(evidence=[findings[0]])
-        mocks[-1].return_value = _make_session()
-
+        runner = CliRunner()
         with (
-            patch(PATCH_SESSION, return_value=_make_session()),
-            patch(PATCH_EVENTS, return_value=findings),
-            patch(PATCH_STOP, return_value=([], [])),
-            patch(PATCH_LOGS, return_value=[]),
-            patch(PATCH_ALB, return_value=[]),
-            patch(PATCH_AGG, return_value=_root_cause(evidence=[findings[0]])),
+            patch(PATCH_SESSION) as ms,
+            patch(PATCH_ENGINE) as me,
         ):
-            runner = CliRunner()
-            result = runner.invoke(
-                cli, ["diagnose", "--cluster", "c", "--service", "s", "--json"]
+            ms.return_value = _make_session()
+            me.return_value = _make_result(
+                root_cause=_root_cause(evidence=[findings[0]]),
+                all_findings=findings,
             )
+            result = runner.invoke(cli, ["diagnose", "--cluster", "c", "--service", "s", "--json"])
         data = json.loads(result.output)
         assert len(data["all_findings"]) == 2
 
 
 class TestErrorHandling:
-    @patch(PATCH_SESSION)
-    @patch(PATCH_EVENTS, return_value=[])
-    @patch(PATCH_STOP, return_value=([], []))
-    @patch(PATCH_LOGS, return_value=[])
-    @patch(PATCH_ALB, return_value=[])
-    @patch(PATCH_AGG)
-    def test_sts_failure_falls_back_to_unknown_account(self, mock_agg, *mocks):
-        mock_agg.return_value = _root_cause()
+    def test_sts_failure_falls_back_to_unknown_account(self):
         sts_err = ClientError(
             {"Error": {"Code": "AccessDenied", "Message": "Denied"}},
             "GetCallerIdentity",
         )
-        mocks[-1].return_value = _make_session(sts_error=sts_err)
         runner = CliRunner()
-        result = runner.invoke(cli, ["diagnose", "--cluster", "c", "--service", "s"])
+        with (
+            patch(PATCH_SESSION) as ms,
+            patch(PATCH_ENGINE) as me,
+        ):
+            ms.return_value = _make_session(sts_error=sts_err)
+            me.return_value = _make_result()
+            result = runner.invoke(cli, ["diagnose", "--cluster", "c", "--service", "s"])
         assert result.exit_code == 0
         assert "Warning" in result.output
 
-    @patch(PATCH_SESSION)
-    @patch(PATCH_EVENTS, return_value=[])
-    @patch(PATCH_STOP, return_value=([], []))
-    @patch(PATCH_LOGS, return_value=[])
-    @patch(PATCH_ALB, return_value=[])
-    @patch(PATCH_AGG)
-    def test_sts_failure_in_json_mode_no_warning(self, mock_agg, *mocks):
-        mock_agg.return_value = _root_cause()
+    def test_sts_failure_in_json_mode_no_warning(self):
         sts_err = ClientError(
             {"Error": {"Code": "AccessDenied", "Message": "Denied"}},
             "GetCallerIdentity",
         )
-        mocks[-1].return_value = _make_session(sts_error=sts_err)
         runner = CliRunner()
-        result = runner.invoke(
-            cli, ["diagnose", "--cluster", "c", "--service", "s", "--json"]
-        )
+        with (
+            patch(PATCH_SESSION) as ms,
+            patch(PATCH_ENGINE) as me,
+        ):
+            ms.return_value = _make_session(sts_error=sts_err)
+            me.return_value = _make_result()
+            result = runner.invoke(cli, ["diagnose", "--cluster", "c", "--service", "s", "--json"])
         assert result.exit_code == 0
         data = json.loads(result.output)
-        assert "cluster" in data  # valid JSON, no crash
+        assert "request" in data  # valid JSON, no crash
 
     def test_no_credentials_error_exits_1(self):
         runner = CliRunner()
@@ -336,37 +280,31 @@ class TestErrorHandling:
         data = json.loads(result.output)
         assert "error" in data
 
-    @patch(PATCH_SESSION)
-    @patch(PATCH_EVENTS, return_value=[])
-    @patch(PATCH_STOP, return_value=([], []))
-    @patch(PATCH_LOGS, return_value=[])
-    @patch(PATCH_ALB, return_value=[])
-    @patch(PATCH_AGG)
-    def test_region_option_passed_to_session(self, mock_agg, *mocks):
-        mock_agg.return_value = _root_cause()
-        session_mock = _make_session(region="ap-southeast-1")
-        mocks[-1].return_value = session_mock
+    def test_region_option_passed_to_session(self):
         runner = CliRunner()
-        result = runner.invoke(
-            cli,
-            ["diagnose", "--cluster", "c", "--service", "s", "--region", "ap-southeast-1"],
-        )
+        with (
+            patch(PATCH_SESSION) as ms,
+            patch(PATCH_ENGINE) as me,
+        ):
+            ms.return_value = _make_session(region="ap-southeast-1")
+            me.return_value = _make_result()
+            result = runner.invoke(
+                cli,
+                ["diagnose", "--cluster", "c", "--service", "s", "--region", "ap-southeast-1"],
+            )
         assert result.exit_code == 0
 
-    @patch(PATCH_SESSION)
-    @patch(PATCH_EVENTS, return_value=[])
-    @patch(PATCH_STOP, return_value=([], []))
-    @patch(PATCH_LOGS, return_value=[])
-    @patch(PATCH_ALB, return_value=[])
-    @patch(PATCH_AGG)
-    def test_profile_option_passed_to_session(self, mock_agg, *mocks):
-        mock_agg.return_value = _root_cause()
-        mock_session = mocks[-1]  # Session is outermost decorator → last positional arg
-        mock_session.return_value = _make_session()
+    def test_profile_option_passed_to_session(self):
         runner = CliRunner()
-        result = runner.invoke(
-            cli,
-            ["diagnose", "--cluster", "c", "--service", "s", "--profile", "my-profile"],
-        )
+        with (
+            patch(PATCH_SESSION) as ms,
+            patch(PATCH_ENGINE) as me,
+        ):
+            ms.return_value = _make_session()
+            me.return_value = _make_result()
+            result = runner.invoke(
+                cli,
+                ["diagnose", "--cluster", "c", "--service", "s", "--profile", "my-profile"],
+            )
         assert result.exit_code == 0
-        mock_session.assert_called_once_with(region_name=None, profile_name="my-profile")
+        ms.assert_called_once_with(region_name=None, profile_name="my-profile")

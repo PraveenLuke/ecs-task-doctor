@@ -1,13 +1,9 @@
 
 import re
 
-from botocore.exceptions import ClientError
-
-from ecs_doctor._aws import iam_finding, is_access_denied, service_resource_arn
+from ecs_doctor._aws import ServiceDataCache, _AccessDeniedCached, iam_finding, service_resource_arn
 from ecs_doctor.models import Finding, FindingType, Severity
 
-# Data-driven event rules — each rule matches one class of service event.
-# Eliminates three structurally identical if-blocks (SonarQube S4144).
 _EVENT_RULES: list[tuple[re.Pattern, FindingType, Severity, str]] = [
     (
         re.compile(r"unable to place a? ?task|Insufficient \w+", re.IGNORECASE),
@@ -38,8 +34,38 @@ _STOPPED_RE = re.compile(r"stopped \d+ task", re.IGNORECASE)
 _THRASH_THRESHOLD = 3
 
 
+def _check_deployment_deadlock(svc: dict) -> Finding | None:
+    """Detect when minimumHealthyPercent + maximumPercent makes replacement impossible."""
+    deploy = svc.get("deploymentConfiguration", {})
+    min_pct = deploy.get("minimumHealthyPercent", 100)
+    max_pct = deploy.get("maximumPercent", 200)
+    desired = svc.get("desiredCount", 0)
+    running = svc.get("runningCount", 0)
+    pending = svc.get("pendingCount", 0)
+
+    if desired > 0 and running == 0 and pending == 0 and min_pct == 100 and max_pct == 100:
+        return Finding(
+            type=FindingType.DEPLOYMENT_CONFIG_DEADLOCK,
+            message=(
+                f"Service has desiredCount={desired} but running=0 and pending=0. "
+                f"minimumHealthyPercent={min_pct} and maximumPercent={max_pct} prevent "
+                f"ECS from launching a replacement task — the deployment is deadlocked."
+            ),
+            severity=Severity.CRITICAL,
+            raw_data={
+                "desiredCount": desired,
+                "runningCount": running,
+                "pendingCount": pending,
+                "minimumHealthyPercent": min_pct,
+                "maximumPercent": max_pct,
+            },
+            source="events",
+        )
+    return None
+
+
 def diagnose_events(
-    ecs_client,
+    service_cache: ServiceDataCache,
     cluster: str,
     service: str,
     region: str,
@@ -47,18 +73,15 @@ def diagnose_events(
     last_n: int = 20,
 ) -> list[Finding]:
     try:
-        resp = ecs_client.describe_services(cluster=cluster, services=[service])
-    except ClientError as exc:
-        if is_access_denied(exc):
-            return [iam_finding(
-                "ecs:DescribeServices",
-                service_resource_arn(region, account_id, cluster, service),
-                "events",
-            )]
-        raise
+        svc = service_cache.get_service(cluster, service, region, account_id)
+    except _AccessDeniedCached:
+        return [iam_finding(
+            "ecs:DescribeServices",
+            service_resource_arn(region, account_id, cluster, service),
+            "events",
+        )]
 
-    services = resp.get("services", [])
-    if not services:
+    if svc is None:
         return [Finding(
             type=FindingType.IAM_DENIED,
             message=f"Service '{service}' not found in cluster '{cluster}'.",
@@ -66,14 +89,18 @@ def diagnose_events(
             source="events",
         )]
 
-    events: list[dict] = services[0].get("events", [])
     findings: list[Finding] = []
+
+    deadlock = _check_deployment_deadlock(svc)
+    if deadlock:
+        findings.append(deadlock)
+
+    events: list[dict] = svc.get("events", [])
     seen: set[FindingType] = set()
 
     for event in events:
         msg = event.get("message", "")
         raw = {"message": msg, "createdAt": str(event.get("createdAt", ""))}
-
         for pattern, ftype, severity, prefix in _EVENT_RULES:
             if ftype not in seen and pattern.search(msg):
                 findings.append(Finding(

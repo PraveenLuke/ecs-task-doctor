@@ -5,6 +5,8 @@ from unittest.mock import MagicMock
 
 from botocore.exceptions import ClientError
 
+from ecs_doctor._aws import ServiceDataCache
+
 REGION = "us-east-1"
 CLUSTER = "test-cluster"
 SERVICE = "test-service"
@@ -34,3 +36,8 @@ def make_logs_client(**method_returns) -> MagicMock:
 
 def make_elbv2_client(**method_returns) -> MagicMock:
     return make_ecs_client(**method_returns)
+
+
+def make_service_cache(ecs_client: MagicMock) -> ServiceDataCache:
+    """Wrap a mock ECS client in a ServiceDataCache for diagnoser tests."""
+    return ServiceDataCache(ecs_client)

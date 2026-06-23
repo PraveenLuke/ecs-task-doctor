@@ -27,6 +27,18 @@ _TASK_STOP_CODE_MAP: dict[str, tuple[FindingType, str]] = {
         FindingType.IMAGE_PULL_FAILURE,
         "Cannot pull container image. stoppedReason: {reason}",
     ),
+    "SpotInterrupted": (
+        FindingType.SPOT_INTERRUPTED,
+        "Fargate Spot task was interrupted by AWS capacity reclamation. stoppedReason: {reason}",
+    ),
+    "TaskFailedToStart": (
+        FindingType.TASK_FAILED_TO_START,
+        "Task failed to start before startTimeout elapsed. stoppedReason: {reason}",
+    ),
+    "EssentialContainerExited": (
+        FindingType.ESSENTIAL_EXITED,
+        "Essential container exited (task-level stopCode). stoppedReason: {reason}",
+    ),
 }
 
 

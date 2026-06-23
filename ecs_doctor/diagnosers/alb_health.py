@@ -3,7 +3,7 @@ from typing import Any
 
 from botocore.exceptions import ClientError
 
-from ecs_doctor._aws import iam_finding, is_access_denied, service_resource_arn
+from ecs_doctor._aws import ServiceDataCache, _AccessDeniedCached, iam_finding, is_access_denied, service_resource_arn
 from ecs_doctor.models import Finding, FindingType, Severity
 
 _REASON_MAP: dict[str, tuple[str, str]] = {
@@ -80,7 +80,7 @@ def _finding_for_target(
 
 
 def diagnose_alb_health(
-    ecs_client,
+    service_cache: ServiceDataCache,
     elbv2_client,
     cluster: str,
     service: str,
@@ -88,53 +88,52 @@ def diagnose_alb_health(
     account_id: str,
 ) -> list[Finding]:
     try:
-        resp = ecs_client.describe_services(cluster=cluster, services=[service])
-    except ClientError as exc:
-        if is_access_denied(exc):
-            return [iam_finding(
-                "ecs:DescribeServices",
-                service_resource_arn(region, account_id, cluster, service),
-                "alb_health",
-            )]
-        raise
+        svc = service_cache.get_service(cluster, service, region, account_id)
+    except _AccessDeniedCached:
+        return [iam_finding(
+            "ecs:DescribeServices",
+            service_resource_arn(region, account_id, cluster, service),
+            "alb_health",
+        )]
 
-    services = resp.get("services", [])
-    if not services:
+    if not svc:
         return []
 
-    load_balancers: list[dict[str, Any]] = services[0].get("loadBalancers", [])
+    load_balancers: list[dict[str, Any]] = svc.get("loadBalancers", [])
     if not load_balancers:
         return []
 
     findings: list[Finding] = []
-
     for lb in load_balancers:
         tg_arn = lb.get("targetGroupArn")
-        if not tg_arn:
-            continue  # Classic Load Balancer or missing config
+        if tg_arn:
+            findings.extend(_check_target_group(elbv2_client, tg_arn))
+    return findings
 
-        try:
-            health_resp = elbv2_client.describe_target_health(TargetGroupArn=tg_arn)
-        except ClientError as exc:
-            if is_access_denied(exc):
-                findings.append(iam_finding(
-                    "elasticloadbalancing:DescribeTargetHealth",
-                    tg_arn,
-                    "alb_health",
-                ))
-                continue
-            raise
 
-        for desc in health_resp.get("TargetHealthDescriptions", []):
-            health = desc.get("TargetHealth", {})
-            finding = _finding_for_target(
-                state=health.get("State", ""),
-                reason_code=health.get("Reason", ""),
-                description=health.get("Description", ""),
-                target=desc.get("Target", {}),
-                tg_arn=tg_arn,
-            )
-            if finding:
-                findings.append(finding)
+def _check_target_group(elbv2_client, tg_arn: str) -> list[Finding]:
+    """Fetch and evaluate health for a single target group."""
+    try:
+        health_resp = elbv2_client.describe_target_health(TargetGroupArn=tg_arn)
+    except ClientError as exc:
+        if is_access_denied(exc):
+            return [iam_finding(
+                "elasticloadbalancing:DescribeTargetHealth",
+                tg_arn,
+                "alb_health",
+            )]
+        raise
 
+    findings: list[Finding] = []
+    for desc in health_resp.get("TargetHealthDescriptions", []):
+        health = desc.get("TargetHealth", {})
+        finding = _finding_for_target(
+            state=health.get("State", ""),
+            reason_code=health.get("Reason", ""),
+            description=health.get("Description", ""),
+            target=desc.get("Target", {}),
+            tg_arn=tg_arn,
+        )
+        if finding:
+            findings.append(finding)
     return findings

@@ -4,35 +4,53 @@ from typing import Any
 
 from botocore.exceptions import ClientError
 
-from ecs_doctor._aws import iam_finding, is_access_denied, service_resource_arn
+from ecs_doctor._aws import ServiceDataCache, _AccessDeniedCached, iam_finding, is_access_denied, service_resource_arn
 from ecs_doctor.models import Finding, FindingType, Severity
 
 _AWSLOGS_DRIVER = "awslogs"
+_MAX_LOG_LINES = 200
 
-# (regex pattern, human label, severity)
-CRASH_PATTERNS: list[tuple[str, str, Severity]] = [
-    (r"Traceback \(most recent call last\)", "Python traceback", Severity.HIGH),
-    (r"Exception in thread", "Java exception", Severity.HIGH),
-    (r"panic:", "Go panic", Severity.HIGH),
-    (r"UnhandledPromiseRejection", "Node.js unhandled rejection", Severity.HIGH),
-    (r"Error: ", "Node.js/generic error", Severity.MEDIUM),
-    (r"permission denied", "Permission denied", Severity.MEDIUM),
-    (r"connection refused", "Connection refused", Severity.MEDIUM),
-    (r"FATAL:", "DB fatal error", Severity.HIGH),
-    (r"deadlock detected", "DB deadlock", Severity.HIGH),
-    (r"out of memory", "OOM in logs", Severity.CRITICAL),
-    (r"cannot allocate memory", "Memory alloc failure", Severity.HIGH),
-    (r"dial tcp.*i/o timeout", "Network timeout", Severity.MEDIUM),
-    (r"no such host", "DNS resolution failed", Severity.MEDIUM),
-    (r"certificate.*expired|SSL.*error", "TLS/SSL error", Severity.MEDIUM),
-    (r"exec format error", "Wrong CPU architecture in image", Severity.CRITICAL),
-    (r"no such file or directory", "Missing file or binary", Severity.HIGH),
-    (r"secret.*not found|SecretNotFound", "Missing secret", Severity.HIGH),
+# (regex pattern, human label, severity, finding_type)
+CRASH_PATTERNS: list[tuple[str, str, Severity, FindingType]] = [
+    # Language-specific tracebacks
+    (r"Traceback \(most recent call last\)", "Python traceback",           Severity.HIGH,     FindingType.LOG_CRASH_SIGNATURE),
+    (r"Exception in thread",                 "Java exception",             Severity.HIGH,     FindingType.LOG_CRASH_SIGNATURE),
+    (r"panic:",                              "Go panic",                   Severity.HIGH,     FindingType.LOG_CRASH_SIGNATURE),
+    (r"UnhandledPromiseRejection",           "Node.js unhandled rejection", Severity.HIGH,    FindingType.LOG_CRASH_SIGNATURE),
+    (r"thread '.*' panicked at",            "Rust panic",                  Severity.HIGH,     FindingType.LOG_CRASH_SIGNATURE),
+    (r"System\.Exception:|Unhandled exception\.", ".NET exception",        Severity.HIGH,     FindingType.LOG_CRASH_SIGNATURE),
+    (r"PHP Fatal error:",                    "PHP fatal error",            Severity.HIGH,     FindingType.LOG_CRASH_SIGNATURE),
+    (r"RuntimeError",                        "Ruby/generic runtime error", Severity.HIGH,     FindingType.LOG_CRASH_SIGNATURE),
+    (r"Error: ",                             "Node.js/generic error",      Severity.MEDIUM,   FindingType.LOG_CRASH_SIGNATURE),
+    # Permissions and connectivity
+    (r"permission denied",                   "Permission denied",          Severity.MEDIUM,   FindingType.LOG_CRASH_SIGNATURE),
+    (r"exec: .* permission denied",          "Entrypoint not executable",  Severity.HIGH,     FindingType.LOG_CRASH_SIGNATURE),
+    (r"connection refused",                  "Connection refused",         Severity.MEDIUM,   FindingType.LOG_CRASH_SIGNATURE),
+    (r"dial tcp.*i/o timeout",              "Network timeout",             Severity.MEDIUM,   FindingType.LOG_CRASH_SIGNATURE),
+    (r"no such host",                        "DNS resolution failed",      Severity.MEDIUM,   FindingType.LOG_CRASH_SIGNATURE),
+    (r"certificate.*expired|SSL.*error",     "TLS/SSL error",              Severity.MEDIUM,   FindingType.LOG_CRASH_SIGNATURE),
+    # Database errors
+    (r"FATAL:",                              "DB fatal error",             Severity.HIGH,     FindingType.LOG_CRASH_SIGNATURE),
+    (r"deadlock detected",                   "DB deadlock",                Severity.HIGH,     FindingType.LOG_CRASH_SIGNATURE),
+    # Memory
+    (r"out of memory",                       "OOM in logs",                Severity.CRITICAL, FindingType.LOG_CRASH_SIGNATURE),
+    (r"cannot allocate memory",              "Memory alloc failure",       Severity.HIGH,     FindingType.LOG_CRASH_SIGNATURE),
+    # Binary / architecture
+    (r"exec format error",                   "Wrong CPU architecture in image", Severity.CRITICAL, FindingType.LOG_CRASH_SIGNATURE),
+    (r"no such file or directory",           "Missing file or binary",     Severity.HIGH,     FindingType.LOG_CRASH_SIGNATURE),
+    # Secrets
+    (r"secret.*not found|SecretNotFound",    "Missing secret",             Severity.HIGH,     FindingType.LOG_CRASH_SIGNATURE),
+    # Disk / storage
+    (r"no space left on device",             "Disk full",                  Severity.CRITICAL, FindingType.DISK_ERROR),
+    (r"read-only file system",               "Read-only filesystem",       Severity.HIGH,     FindingType.DISK_ERROR),
+    (r"disk quota exceeded",                 "Disk quota exceeded",        Severity.HIGH,     FindingType.DISK_ERROR),
+    # EFS / NFS mounts
+    (r"mount\.nfs:.*failed|nfs: server.*not responding", "EFS/NFS mount failure", Severity.CRITICAL, FindingType.EFS_MOUNT_FAILURE),
 ]
 
-_COMPILED: list[tuple[re.Pattern, str, Severity]] = [
-    (re.compile(pat, re.IGNORECASE), label, sev)
-    for pat, label, sev in CRASH_PATTERNS
+_COMPILED: list[tuple[re.Pattern, str, Severity, FindingType]] = [
+    (re.compile(pat, re.IGNORECASE), label, sev, ftype)
+    for pat, label, sev, ftype in CRASH_PATTERNS
 ]
 
 
@@ -43,7 +61,6 @@ def _extract_context(lines: list[str], match_idx: int, context: int = 2) -> str:
 
 
 def _awslogs_configs(container_defs: list[dict], region: str) -> dict[str, dict[str, str]]:
-    """Extract per-container awslogs configuration from task definition containers."""
     configs: dict[str, dict[str, str]] = {}
     for c in container_defs:
         lc = c.get("logConfiguration", {})
@@ -66,13 +83,12 @@ def _scan_log_stream(
     container_name: str,
     task_id: str,
 ) -> list[Finding]:
-    """Fetch one log stream and return crash-signature findings. Returns None on AccessDenied."""
     try:
         log_resp = logs_client.get_log_events(
             logGroupName=log_group,
             logStreamName=stream_name,
             startFromHead=True,
-            limit=200,
+            limit=_MAX_LOG_LINES,
         )
     except ClientError as exc:
         if is_access_denied(exc):
@@ -94,14 +110,14 @@ def _scan_log_stream(
     findings: list[Finding] = []
     seen_labels: set[str] = set()
 
-    for pattern, label, severity in _COMPILED:
+    for pattern, label, severity, ftype in _COMPILED:
         if label in seen_labels:
             continue
         match = pattern.search(log_text)
         if match:
             match_line_idx = log_text[: match.start()].count("\n")
             findings.append(Finding(
-                type=FindingType.LOG_CRASH_SIGNATURE,
+                type=ftype,
                 message=f"[{container_name}] {label} detected in logs (task {task_id})",
                 severity=severity,
                 raw_data={
@@ -120,6 +136,7 @@ def _scan_log_stream(
 
 
 def diagnose_logs(
+    service_cache: ServiceDataCache,
     ecs_client,
     logs_client,
     cluster: str,
@@ -132,21 +149,18 @@ def diagnose_logs(
         return []
 
     try:
-        svc_resp = ecs_client.describe_services(cluster=cluster, services=[service])
-    except ClientError as exc:
-        if is_access_denied(exc):
-            return [iam_finding(
-                "ecs:DescribeServices",
-                service_resource_arn(region, account_id, cluster, service),
-                "logs",
-            )]
-        raise
+        svc = service_cache.get_service(cluster, service, region, account_id)
+    except _AccessDeniedCached:
+        return [iam_finding(
+            "ecs:DescribeServices",
+            service_resource_arn(region, account_id, cluster, service),
+            "logs",
+        )]
 
-    svcs = svc_resp.get("services", [])
-    if not svcs:
+    if not svc:
         return []
 
-    task_def_arn = svcs[0].get("taskDefinition")
+    task_def_arn = svc.get("taskDefinition")
     if not task_def_arn:
         return []
 
@@ -177,7 +191,6 @@ def diagnose_logs(
                 task_id=task_id,
             )
             findings.extend(stream_findings)
-            # AccessDenied on a stream means all streams in this task will also fail
             if any(f.type == FindingType.IAM_DENIED for f in stream_findings):
                 break
 
