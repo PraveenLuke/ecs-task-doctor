@@ -12,12 +12,6 @@ requires-python = ">=3.12"
 authors = [
   { name = "Praveen Rajkoilraj", email = "86464046+PraveenLuke@users.noreply.github.com" }
 ]
-
-[project.urls]
-Homepage = "https://github.com/PraveenLuke/ecs-doctor"
-Repository = "https://github.com/PraveenLuke/ecs-doctor"
-"Bug Tracker" = "https://github.com/PraveenLuke/ecs-doctor/issues"
-Changelog = "https://github.com/PraveenLuke/ecs-doctor/releases"
 keywords = ["aws", "ecs", "devops", "debugging", "cli", "diagnosis"]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -35,6 +29,12 @@ dependencies = [
   "rich>=13.0",
   "click>=8.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/PraveenLuke/ecs-doctor"
+Repository = "https://github.com/PraveenLuke/ecs-doctor"
+"Bug Tracker" = "https://github.com/PraveenLuke/ecs-doctor/issues"
+Changelog = "https://github.com/PraveenLuke/ecs-doctor/releases"
 
 [project.scripts]
 ecs-doctor = "ecs_doctor.cli:cli"
