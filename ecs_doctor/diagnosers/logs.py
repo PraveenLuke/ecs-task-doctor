@@ -67,6 +67,19 @@ CRASH_PATTERNS: list[tuple[str, str, Severity, FindingType]] = [
     (r"certificate verify failed|CERTIFICATE_VERIFY_FAILED", "TLS certificate verification failed", Severity.MEDIUM, FindingType.LOG_CRASH_SIGNATURE),
     # DNS alternate phrasing
     (r"unable to resolve host", "DNS resolution failed", Severity.MEDIUM, FindingType.LOG_CRASH_SIGNATURE),
+    # Raw error codes (Node.js / Go emit these without the human string)
+    (r"ECONNREFUSED",           "Connection refused (raw error code)",  Severity.MEDIUM,   FindingType.LOG_CRASH_SIGNATURE),
+    # Signal kill (Go runtime output when SIGKILL received)
+    (r"signal: killed",         "Process killed by signal (SIGKILL)",   Severity.HIGH,     FindingType.LOG_CRASH_SIGNATURE),
+    # Shell/bash "Killed" line when OOM killer fires
+    (r"\bKilled\b",             "Process killed by OOM killer",         Severity.HIGH,     FindingType.OOM_KILLED),
+    # TCP-level connection errors
+    (r"connection reset by peer", "TCP connection reset by peer",       Severity.MEDIUM,   FindingType.LOG_CRASH_SIGNATURE),
+    (r"broken pipe",            "Broken pipe (write to closed conn)",   Severity.MEDIUM,   FindingType.LOG_CRASH_SIGNATURE),
+    # Address not available (container trying to bind a non-local IP)
+    (r"bind EADDRNOTAVAIL",     "Address not available for binding",    Severity.HIGH,     FindingType.PORT_CONFLICT),
+    # OOMKilled string that appears in containerd-on-EC2 logs
+    (r"OOMKilled",              "OOM kill (container runtime)",         Severity.CRITICAL, FindingType.OOM_KILLED),
 ]
 
 _COMPILED: list[tuple[re.Pattern, str, Severity, FindingType]] = [
@@ -176,6 +189,32 @@ def _scan_log_stream(
     return findings
 
 
+def _scan_all_tasks(
+    logs_client,
+    task_arns: list[str],
+    log_configs: dict,
+    account_id: str,
+) -> list[Finding]:
+    findings: list[Finding] = []
+    for task_arn in task_arns:
+        task_id = task_arn.split("/")[-1]
+        for container_name, cfg in log_configs.items():
+            stream_name = f"{cfg['stream_prefix']}/{container_name}/{task_id}"
+            stream_findings = _scan_log_stream(
+                logs_client,
+                log_group=cfg["log_group"],
+                stream_name=stream_name,
+                log_region=cfg["log_region"],
+                account_id=account_id,
+                container_name=container_name,
+                task_id=task_id,
+            )
+            findings.extend(stream_findings)
+            if any(f.type == FindingType.IAM_DENIED for f in stream_findings):
+                break
+    return findings
+
+
 def diagnose_logs(
     service_cache: ServiceDataCache,
     ecs_client,
@@ -216,22 +255,18 @@ def diagnose_logs(
     findings: list[Finding] = _check_firelens(container_defs)
     log_configs = _awslogs_configs(container_defs, region)
     if not log_configs:
+        if not findings:
+            findings.append(Finding(
+                type=FindingType.MISSING_LOG_CONFIG,
+                message=(
+                    "No awslogs log configuration found for any container. "
+                    "stdout/stderr is not captured in CloudWatch Logs — "
+                    "crash diagnostics from this diagnoser are unavailable."
+                ),
+                severity=Severity.MEDIUM,
+                raw_data={},
+                source="logs",
+            ))
         return findings
-    for task_arn in task_arns:
-        task_id = task_arn.split("/")[-1]
-        for container_name, cfg in log_configs.items():
-            stream_name = f"{cfg['stream_prefix']}/{container_name}/{task_id}"
-            stream_findings = _scan_log_stream(
-                logs_client,
-                log_group=cfg["log_group"],
-                stream_name=stream_name,
-                log_region=cfg["log_region"],
-                account_id=account_id,
-                container_name=container_name,
-                task_id=task_id,
-            )
-            findings.extend(stream_findings)
-            if any(f.type == FindingType.IAM_DENIED for f in stream_findings):
-                break
-
+    findings.extend(_scan_all_tasks(logs_client, task_arns, log_configs, account_id))
     return findings

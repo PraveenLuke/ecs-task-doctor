@@ -421,3 +421,52 @@ class TestValidateMemoryLimits:
             "containerDefinitions": [{"name": "app"}],
         }
         assert _validate_memory_limits(td) is None
+
+
+# ---------------------------------------------------------------------------
+# _validate_depends_on_health
+# ---------------------------------------------------------------------------
+
+from ecs_doctor.diagnosers.config import _validate_depends_on_health
+
+
+class TestValidateDependsOnHealth:
+    def test_healthy_dep_without_healthcheck_returns_finding(self):
+        td = {
+            "containerDefinitions": [
+                {"name": "sidecar"},
+                {
+                    "name": "app",
+                    "dependsOn": [{"containerName": "sidecar", "condition": "HEALTHY"}],
+                },
+            ]
+        }
+        finding = _validate_depends_on_health(td)
+        assert finding is not None
+        assert finding.type == FindingType.INVALID_TASK_CONFIG
+        assert finding.severity == Severity.HIGH
+        assert "sidecar" in finding.message
+
+    def test_healthy_dep_with_healthcheck_returns_none(self):
+        td = {
+            "containerDefinitions": [
+                {"name": "sidecar", "healthCheck": {"command": ["CMD", "true"]}},
+                {
+                    "name": "app",
+                    "dependsOn": [{"containerName": "sidecar", "condition": "HEALTHY"}],
+                },
+            ]
+        }
+        assert _validate_depends_on_health(td) is None
+
+    def test_non_healthy_dep_without_healthcheck_returns_none(self):
+        td = {
+            "containerDefinitions": [
+                {"name": "sidecar"},
+                {
+                    "name": "app",
+                    "dependsOn": [{"containerName": "sidecar", "condition": "START"}],
+                },
+            ]
+        }
+        assert _validate_depends_on_health(td) is None

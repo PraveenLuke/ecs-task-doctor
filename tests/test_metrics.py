@@ -244,3 +244,42 @@ def test_max_below_spike_threshold_no_extra_finding():
     )
     findings = _anomaly_findings(snapshot, CLUSTER, SERVICE)
     assert findings == []
+
+
+# ---------------------------------------------------------------------------
+# CPU max spike check (v0.4.2)
+# ---------------------------------------------------------------------------
+
+def test_cpu_max_spike_produces_high_finding():
+    snapshot = MetricSnapshot(
+        cluster=CLUSTER,
+        service=SERVICE,
+        period_seconds=300,
+        lookback_hours=3,
+        cpu_avg_percent=20.0,
+        cpu_max_percent=96.0,   # above spike threshold (95%)
+        memory_avg_percent=50.0,
+        memory_max_percent=60.0,
+    )
+    findings = _anomaly_findings(snapshot, CLUSTER, SERVICE)
+    assert any(f.type == FindingType.HIGH_CPU_UTILIZATION for f in findings)
+    f = next(x for x in findings if x.type == FindingType.HIGH_CPU_UTILIZATION)
+    assert f.severity == Severity.HIGH
+    assert "96" in f.message or "spike" in f.message.lower()
+
+
+def test_no_cpu_spike_when_avg_already_critical():
+    snapshot = MetricSnapshot(
+        cluster=CLUSTER,
+        service=SERVICE,
+        period_seconds=300,
+        lookback_hours=3,
+        cpu_avg_percent=90.0,   # avg already over threshold
+        cpu_max_percent=97.0,   # also above spike threshold
+        memory_avg_percent=50.0,
+        memory_max_percent=60.0,
+    )
+    findings = _anomaly_findings(snapshot, CLUSTER, SERVICE)
+    cpu_findings = [f for f in findings if f.type == FindingType.HIGH_CPU_UTILIZATION]
+    assert len(cpu_findings) == 1   # only one finding, not two
+    assert cpu_findings[0].severity == Severity.HIGH

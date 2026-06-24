@@ -303,3 +303,30 @@ class TestRunDiagnosis:
         mock_logs.assert_called_once()
         mock_alb.assert_called_once()
         mock_net.assert_called_once()
+
+    def test_diagnoser_exception_isolated(self):
+        """A future that raises should produce one IAM_DENIED LOW instead of crashing."""
+        from concurrent.futures import Future
+
+        def _raise():
+            raise RuntimeError("simulated AWS error")
+
+        with (
+            patch(_PATCH_EVENTS, side_effect=RuntimeError("events fail")),
+            patch(_PATCH_STOP, return_value=([], [])),
+            patch(_PATCH_LOGS, return_value=[]),
+            patch(_PATCH_ALB, return_value=[_finding(FindingType.ALB_UNHEALTHY)]),
+            patch(_PATCH_AGG, return_value=_root_cause()),
+            patch(_PATCH_NETWORK, return_value=[]),
+        ):
+            result = run_diagnosis(
+                ecs_client=MagicMock(), logs_client=MagicMock(),
+                elb_client=MagicMock(), cw_client=MagicMock(),
+                ec2_client=MagicMock(),
+                request=_req(), include_metrics=False, include_config=False,
+            )
+        types = {f.type for f in result.all_findings}
+        assert FindingType.IAM_DENIED in types
+        assert FindingType.ALB_UNHEALTHY in types
+        error_findings = [f for f in result.all_findings if f.type == FindingType.IAM_DENIED]
+        assert all(f.severity == Severity.LOW for f in error_findings)

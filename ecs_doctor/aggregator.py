@@ -77,6 +77,13 @@ _HYPOTHESIS: dict[FindingType, tuple[str, float, str]] = {
         "Review service events and logs from the new tasks that failed during deployment. "
         "Compare the failing task definition against the last known-good version.",
     ),
+    FindingType.DEPLOYMENT_STALL: (
+        "Deployment is stalled — tasks are launching but failing health checks",
+        0.75,
+        "Check ALB health check path and grace period. Tasks are starting (pendingCount > 0) "
+        "but not reaching healthy state. Review application startup logs and increase "
+        "healthCheckGracePeriodSeconds.",
+    ),
     FindingType.DEPLOYMENT_CONFIG_DEADLOCK: (
         "Deployment is deadlocked — minimumHealthyPercent/maximumPercent prevents task replacement",
         0.80,

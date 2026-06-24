@@ -18,6 +18,7 @@ class FindingType(str, Enum):
     TASK_THRASHING = "task_thrashing"
     DEPLOYMENT_ROLLBACK = "deployment_rollback"
     DEPLOYMENT_CONFIG_DEADLOCK = "deployment_config_deadlock"
+    DEPLOYMENT_STALL = "deployment_stall"
     # stop_reasons.py
     OOM_KILLED = "oom_killed"
     NON_ZERO_EXIT = "non_zero_exit"

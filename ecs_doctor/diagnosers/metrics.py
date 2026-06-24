@@ -15,6 +15,7 @@ _CPU_ALERT_THRESHOLD = 85.0
 _MEMORY_ALERT_THRESHOLD = 85.0
 _MEMORY_CRITICAL_THRESHOLD = 85.0
 _MEMORY_MAX_THRESHOLD = 95.0
+_CPU_MAX_THRESHOLD = 95.0
 
 
 def _build_metric_queries(
@@ -110,6 +111,26 @@ def _anomaly_findings(snapshot: MetricSnapshot, cluster: str, service: str) -> l
                 f"Average CPU utilization is {snapshot.cpu_avg_percent:.1f}% "
                 f"(threshold: {_CPU_ALERT_THRESHOLD}%) over the last "
                 f"{snapshot.lookback_hours}h for {cluster}/{service}."
+            ),
+            severity=Severity.HIGH,
+            raw_data={
+                "cpu_avg_percent": snapshot.cpu_avg_percent,
+                "cpu_max_percent": snapshot.cpu_max_percent,
+                "lookback_hours": snapshot.lookback_hours,
+            },
+            source="metrics",
+        ))
+    elif (
+        snapshot.cpu_max_percent is not None
+        and snapshot.cpu_max_percent >= _CPU_MAX_THRESHOLD
+    ):
+        findings.append(Finding(
+            type=FindingType.HIGH_CPU_UTILIZATION,
+            message=(
+                f"CPU utilization spiked to {snapshot.cpu_max_percent:.1f}% "
+                f"(spike threshold: {_CPU_MAX_THRESHOLD}%) over the last "
+                f"{snapshot.lookback_hours}h for {cluster}/{service}. "
+                "A spike this high throttles the container and can cause health check timeouts."
             ),
             severity=Severity.HIGH,
             raw_data={

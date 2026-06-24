@@ -16,6 +16,7 @@ _STOPPED_STATUS = "STOPPED"
 _ESSENTIAL_LOWER = "essential container"
 _CANNOT_PULL_LOWER = "cannotpullcontainererror"
 _CANNOT_START_LOWER = "cannotstartcontainererror"
+_DEPENDS_ON_LOWER = "dependent container"
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +231,10 @@ def _classify_container(
             },
         )
 
+    depends_on_result = _check_depends_on_healthy(name, exit_code, lower_reason, stopped_reason, task_arn)
+    if depends_on_result:
+        return depends_on_result
+
     if _ESSENTIAL_LOWER in lower_stopped:
         return (
             (FindingType.ESSENTIAL_EXITED, name, None),
@@ -244,6 +249,32 @@ def _classify_container(
         )
 
     return _check_dependency_failed(name, exit_code, lower_reason, essential, stopped_reason, task_arn)
+
+
+def _check_depends_on_healthy(
+    name: str,
+    exit_code: int | None,
+    lower_reason: str,
+    stopped_reason: str,
+    task_arn: str,
+) -> tuple[tuple, dict] | None:
+    """Detect essential containers stopped because a dependsOn HEALTHY reason was present."""
+    if exit_code is None and _DEPENDS_ON_LOWER in lower_reason:
+        return (
+            (FindingType.DEPENDENCY_FAILED, name, None),
+            {
+                "taskArn": task_arn,
+                "containerName": name,
+                "exitCode": None,
+                "stoppedReason": stopped_reason,
+                "severity": Severity.MEDIUM,
+                "message": (
+                    f"Container '{name}' stopped because a dependsOn HEALTHY condition "
+                    f"was never satisfied. Reason: {stopped_reason}"
+                ),
+            },
+        )
+    return None
 
 
 def _check_dependency_failed(

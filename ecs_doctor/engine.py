@@ -10,7 +10,7 @@ from ecs_doctor.diagnosers.alb_health import diagnose_alb_health
 from ecs_doctor.diagnosers.events import diagnose_events
 from ecs_doctor.diagnosers.logs import diagnose_logs
 from ecs_doctor.diagnosers.stop_reasons import diagnose_stop_reasons
-from ecs_doctor.models import Finding, MetricSnapshot, RootCause, ServiceConfig, TaskConfig
+from ecs_doctor.models import Finding, FindingType, MetricSnapshot, RootCause, ServiceConfig, Severity, TaskConfig
 
 
 @dataclass
@@ -39,6 +39,58 @@ def to_json_safe(obj: object) -> object:
     if isinstance(obj, list):
         return [to_json_safe(i) for i in obj]
     return obj
+
+
+# ---------------------------------------------------------------------------
+# Per-future exception isolation helpers
+# ---------------------------------------------------------------------------
+
+def _safe_findings(future, source: str) -> list[Finding]:
+    try:
+        return future.result()
+    except Exception as exc:  # noqa: BLE001
+        return [Finding(
+            type=FindingType.IAM_DENIED,
+            message=f"[{source}] Unexpected error: {exc}",
+            severity=Severity.LOW,
+            source=source,
+        )]
+
+
+def _safe_stop(future) -> tuple[list[Finding], list[str]]:
+    try:
+        return future.result()
+    except Exception as exc:  # noqa: BLE001
+        return [Finding(
+            type=FindingType.IAM_DENIED,
+            message=f"[stop_reasons] Unexpected error: {exc}",
+            severity=Severity.LOW,
+            source="stop_reasons",
+        )], []
+
+
+def _safe_config(future) -> tuple[list[Finding], ServiceConfig | None, TaskConfig | None]:
+    try:
+        return future.result()
+    except Exception as exc:  # noqa: BLE001
+        return [Finding(
+            type=FindingType.IAM_DENIED,
+            message=f"[config] Unexpected error: {exc}",
+            severity=Severity.LOW,
+            source="config",
+        )], None, None
+
+
+def _safe_metrics(future) -> tuple[list[Finding], MetricSnapshot | None]:
+    try:
+        return future.result()
+    except Exception as exc:  # noqa: BLE001
+        return [Finding(
+            type=FindingType.IAM_DENIED,
+            message=f"[metrics] Unexpected error: {exc}",
+            severity=Severity.LOW,
+            source="metrics",
+        )], None
 
 
 # ---------------------------------------------------------------------------
@@ -124,26 +176,34 @@ def run_diagnosis(
         f_network = pool.submit(_run_network, cache, ecs_client, ec2_client, kwargs)
 
     # Phase 2: logs needs task_arns from stop_reasons (sequential dependency)
-    stop_findings, task_arns = f_stop.result()
-    log_findings = diagnose_logs(
-        service_cache=cache,
-        ecs_client=ecs_client,
-        logs_client=logs_client,
-        task_arns=task_arns,
-        **kwargs,
-    )
+    stop_findings, task_arns = _safe_stop(f_stop)
+    try:
+        log_findings = diagnose_logs(
+            service_cache=cache,
+            ecs_client=ecs_client,
+            logs_client=logs_client,
+            task_arns=task_arns,
+            **kwargs,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log_findings = [Finding(
+            type=FindingType.IAM_DENIED,
+            message=f"[logs] Unexpected error: {exc}",
+            severity=Severity.LOW,
+            source="logs",
+        )]
 
-    config_findings, service_config, task_config = f_config.result()
-    metric_findings, metrics = f_metrics.result()
+    config_findings, service_config, task_config = _safe_config(f_config)
+    metric_findings, metrics = _safe_metrics(f_metrics)
 
     all_findings: list[Finding] = (
-        f_events.result()
+        _safe_findings(f_events, "events")
         + stop_findings
         + log_findings
-        + f_alb.result()
+        + _safe_findings(f_alb, "alb_health")
         + config_findings
         + metric_findings
-        + f_network.result()
+        + _safe_findings(f_network, "network")
     )
 
     root_cause = aggregate(all_findings)

@@ -97,6 +97,24 @@ def _check_deployment_deadlock(svc: dict) -> Finding | None:
     return None
 
 
+def _check_deployment_stall(deployments: list[dict]) -> Finding | None:
+    """Detect IN_PROGRESS deployment where tasks launch but never become healthy."""
+    for d in deployments:
+        if d.get("status") == "IN_PROGRESS" and d.get("pendingCount", 0) > 0 and d.get("runningCount", 0) == 0:
+            return Finding(
+                type=FindingType.DEPLOYMENT_STALL,
+                message=(
+                    f"Deployment {d.get('id', '')} is IN_PROGRESS with "
+                    f"pendingCount={d.get('pendingCount')}, runningCount=0. "
+                    "Tasks are launching but failing health checks before reaching steady state."
+                ),
+                severity=Severity.HIGH,
+                raw_data={"deployment_id": d.get("id"), "pendingCount": d.get("pendingCount")},
+                source="events",
+            )
+    return None
+
+
 def diagnose_events(
     service_cache: ServiceDataCache,
     cluster: str,
@@ -124,7 +142,12 @@ def diagnose_events(
 
     findings: list[Finding] = []
 
-    for check in (_check_steady_state_deficit(svc), _check_deployment_deadlock(svc)):
+    deployments = svc.get("deployments", [])
+    for check in (
+        _check_steady_state_deficit(svc),
+        _check_deployment_deadlock(svc),
+        _check_deployment_stall(deployments),
+    ):
         if check:
             findings.append(check)
 

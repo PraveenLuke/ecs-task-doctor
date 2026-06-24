@@ -223,14 +223,16 @@ def test_missing_log_stream_is_skipped():
 # No awslogs driver — skip gracefully
 # ---------------------------------------------------------------------------
 
-def test_no_awslogs_driver_returns_empty():
+def test_no_awslogs_driver_emits_advisory():
     ecs = make_ecs_client(
         describe_services=_svc_resp(),
         describe_task_definition=_td_resp(log_driver="splunk"),
     )
     logs = make_logs_client(get_log_events=_log_events(["some log line"]))
     findings = _call(ecs, logs)
-    assert findings == []
+    assert len(findings) == 1
+    assert findings[0].type == FindingType.MISSING_LOG_CONFIG
+    assert findings[0].severity == Severity.MEDIUM
 
 
 # ---------------------------------------------------------------------------
@@ -347,3 +349,61 @@ def test_log_context_included_in_raw_data():
     f = next(x for x in findings if x.type == FindingType.LOG_CRASH_SIGNATURE)
     assert "context" in f.raw_data
     assert "Traceback" in f.raw_data["context"]
+
+
+# ---------------------------------------------------------------------------
+# New CRASH_PATTERNS (v0.4.2)
+# ---------------------------------------------------------------------------
+
+def test_econnrefused_pattern():
+    ecs = _make_ecs()
+    logs = make_logs_client(get_log_events=_log_events(["connect ECONNREFUSED 127.0.0.1:5432"]))
+    findings = _call(ecs, logs)
+    assert any(f.type == FindingType.LOG_CRASH_SIGNATURE for f in findings)
+
+
+def test_signal_killed_pattern():
+    ecs = _make_ecs()
+    logs = make_logs_client(get_log_events=_log_events(["signal: killed"]))
+    findings = _call(ecs, logs)
+    assert any(f.type == FindingType.LOG_CRASH_SIGNATURE for f in findings)
+
+
+def test_connection_reset_pattern():
+    ecs = _make_ecs()
+    logs = make_logs_client(get_log_events=_log_events(["read: connection reset by peer"]))
+    findings = _call(ecs, logs)
+    assert any(f.type == FindingType.LOG_CRASH_SIGNATURE for f in findings)
+
+
+def test_broken_pipe_pattern():
+    ecs = _make_ecs()
+    logs = make_logs_client(get_log_events=_log_events(["write tcp: broken pipe"]))
+    findings = _call(ecs, logs)
+    assert any(f.type == FindingType.LOG_CRASH_SIGNATURE for f in findings)
+
+
+def test_oomkilled_string_pattern():
+    ecs = _make_ecs()
+    logs = make_logs_client(get_log_events=_log_events(["container exited with OOMKilled"]))
+    findings = _call(ecs, logs)
+    assert any(f.type == FindingType.OOM_KILLED for f in findings)
+    f = next(x for x in findings if x.type == FindingType.OOM_KILLED)
+    assert f.severity == Severity.CRITICAL
+
+
+# ---------------------------------------------------------------------------
+# No log driver advisory
+# ---------------------------------------------------------------------------
+
+def test_no_log_driver_emits_advisory():
+    ecs = make_ecs_client(
+        describe_services=_svc_resp(),
+        describe_task_definition=_td_resp(log_driver="none"),
+    )
+    logs = make_logs_client()
+    findings = _call(ecs, logs)
+    assert any(f.type == FindingType.MISSING_LOG_CONFIG for f in findings)
+    f = next(x for x in findings if x.type == FindingType.MISSING_LOG_CONFIG)
+    assert f.severity == Severity.MEDIUM
+    assert f.source == "logs"

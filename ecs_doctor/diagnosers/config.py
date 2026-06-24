@@ -272,6 +272,30 @@ def _validate_memory_limits(td: dict) -> Finding | None:
     return None
 
 
+def _validate_depends_on_health(td: dict) -> Finding | None:
+    """Detect dependsOn condition=HEALTHY where the referenced container has no healthCheck."""
+    containers = td.get("containerDefinitions", [])
+    containers_with_hc = {c.get("name", "") for c in containers if c.get("healthCheck")}
+
+    for container in containers:
+        for dep in container.get("dependsOn", []):
+            if dep.get("condition") == "HEALTHY":
+                ref = dep.get("containerName", "")
+                if ref and ref not in containers_with_hc:
+                    return Finding(
+                        type=FindingType.INVALID_TASK_CONFIG,
+                        message=(
+                            f"Container '{container.get('name')}' has dependsOn condition=HEALTHY "
+                            f"for '{ref}', but '{ref}' has no healthCheck configured. "
+                            "The condition can never be satisfied — the task will never reach RUNNING."
+                        ),
+                        severity=Severity.HIGH,
+                        raw_data={"container": container.get("name"), "depends_on_target": ref},
+                        source=_SOURCE,
+                    )
+    return None
+
+
 def diagnose_config(
     service_cache: ServiceDataCache,
     ecs_client,
@@ -321,6 +345,7 @@ def diagnose_config(
         _validate_circuit_breaker(svc),
         _validate_log_config(td),
         _validate_memory_limits(td),
+        _validate_depends_on_health(td),
     ):
         if validator_result:
             findings.append(validator_result)

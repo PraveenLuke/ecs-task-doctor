@@ -363,3 +363,27 @@ def test_essential_container_no_exit_not_dependency_failed():
     )
     findings, _ = diagnose_stop_reasons(ecs, CLUSTER, SERVICE, REGION, ACCOUNT)
     assert not any(f.type == FindingType.DEPENDENCY_FAILED for f in findings)
+
+
+# ---------------------------------------------------------------------------
+# dependsOn — essential container stopped with "dependent container" reason
+# ---------------------------------------------------------------------------
+
+def test_dependency_failed_essential_with_reason():
+    container = {
+        "name": "app",
+        "reason": "Dependent container failed health check conditions",
+        "essential": True,
+    }
+    ecs = _make_client(
+        [_TASK_ARN],
+        [_task(
+            stopped_reason="Dependent container failed health check conditions",
+            containers=[container],
+        )],
+    )
+    findings, _ = diagnose_stop_reasons(ecs, CLUSTER, SERVICE, REGION, ACCOUNT)
+    assert any(f.type == FindingType.DEPENDENCY_FAILED for f in findings)
+    f = next(x for x in findings if x.type == FindingType.DEPENDENCY_FAILED)
+    assert f.severity == Severity.MEDIUM
+    assert "dependsOn" in f.message or "HEALTHY" in f.message
