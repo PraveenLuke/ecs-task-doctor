@@ -2,33 +2,79 @@
 {% block content %}
 <section class="card">
   <h2>Run Diagnosis</h2>
-  <form hx-post="/diagnose" hx-target="#result" hx-swap="innerHTML" hx-indicator="#spinner">
+  <form hx-post="/diagnose" hx-target="#result" hx-swap="innerHTML"
+        hx-on::before-request="if(event.detail.elt===this) showDiagnosing()"
+        hx-on::after-request="if(event.detail.elt===this) resetBtn()">
+
+    <div class="field-row">
+      <div class="field">
+        <label for="region">AWS Region</label>
+        <input id="region" name="region" type="text" value="us-east-1"
+               hx-get="/api/clusters-options"
+               hx-trigger="change delay:400ms"
+               hx-target="#cluster"
+               hx-swap="innerHTML"
+               hx-include="this,[name='profile']">
+      </div>
+      <div class="field">
+        <label for="profile">AWS Profile</label>
+        <select id="profile" name="profile"
+                hx-get="/api/clusters-options"
+                hx-trigger="change, load delay:100ms"
+                hx-target="#cluster"
+                hx-swap="innerHTML"
+                hx-include="[name='region'],this">
+          <option value="">Default credentials</option>
+          {% for p in profiles %}
+          <option value="{{ p }}">{{ p }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
     <div class="field">
       <label for="cluster">ECS Cluster</label>
-      <input id="cluster" name="cluster" type="text" placeholder="prod-cluster" required>
+      <select id="cluster" name="cluster"
+              hx-get="/api/services-options"
+              hx-trigger="change"
+              hx-target="#service"
+              hx-swap="innerHTML"
+              hx-include="[name='region'],[name='profile']">
+        <option value="" disabled>Loading clusters…</option>
+      </select>
     </div>
+
     <div class="field">
       <label for="service">ECS Service</label>
-      <input id="service" name="service" type="text" placeholder="api" required>
+      <select id="service" name="service" required>
+        <option value="" disabled>Select a cluster first</option>
+      </select>
     </div>
-    <div class="field">
-      <label for="region">AWS Region</label>
-      <input id="region" name="region" type="text" value="us-east-1">
-    </div>
-    <div class="field">
-      <label for="profile">AWS Profile <span class="optional">(optional)</span></label>
-      <input id="profile" name="profile" type="text" placeholder="default">
-    </div>
-    <button type="submit">Diagnose</button>
-    <span id="spinner" class="htmx-indicator">Running…</span>
+
+    <button type="submit" id="diagnose-btn">Diagnose</button>
   </form>
 </section>
 
 <section id="result"></section>
 
-<section class="card stream-section" style="display:none" id="stream-panel">
-  <h2>Live Log Stream</h2>
-  <pre id="log-output"></pre>
-  <button onclick="stopStream()">Stop</button>
-</section>
+<script>
+function showDiagnosing() {
+  var btn = document.getElementById('diagnose-btn');
+  btn.disabled = true;
+  btn.textContent = 'Diagnosing…';
+  document.getElementById('result').innerHTML =
+    '<div class="card loading-card">' +
+      '<div class="loading-spinner"></div>' +
+      '<h3>Diagnosing your ECS service…</h3>' +
+      '<p class="dim">Checking ECS events, stopped task reasons, CloudWatch logs, and ALB health.</p>' +
+      '<p class="dim">This usually takes 10–30 seconds.</p>' +
+    '</div>';
+}
+function resetBtn() {
+  var btn = document.getElementById('diagnose-btn');
+  btn.disabled = false;
+  btn.textContent = 'Diagnose';
+}
+</script>
+
 {% endblock %}

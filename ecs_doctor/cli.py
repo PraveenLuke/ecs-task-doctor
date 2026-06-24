@@ -217,7 +217,7 @@ def cli() -> None:
 
 @cli.command()
 @click.option("--cluster", required=True, help="ECS cluster name or ARN.")
-@click.option("--service", required=True, help="ECS service name.")
+@click.option("--service", default=None, help="ECS service name. Omit to pick interactively from the cluster.")
 @click.option("--region", default=None, help="AWS region (overrides profile/env default).")
 @click.option("--profile", default=None, help="AWS named profile from ~/.aws/credentials.")
 @click.option(
@@ -238,7 +238,7 @@ def cli() -> None:
 )
 def diagnose(
     cluster: str,
-    service: str,
+    service: str | None,
     region: str | None,
     profile: str | None,
     output_json: bool,
@@ -256,6 +256,9 @@ def diagnose(
         )
     except NoCredentialsError:
         _no_creds_error(output_json)
+
+    if service is None:
+        service = _pick_service(ecs_client, cluster)
 
     if stream_logs:
         _run_stream(ecs_client, logs_client, cluster, service, effective_region)
@@ -375,6 +378,34 @@ def _run_stream(ecs_client, logs_client, cluster: str, service: str, region: str
             console.print(f"[dim]{event['container']}[/dim]  {event['message']}")
     except KeyboardInterrupt:
         console.print("\n[dim]Log streaming stopped.[/dim]")
+
+
+def _pick_service(ecs_client, cluster: str) -> str:
+    """List services in the cluster and prompt the user to pick one interactively."""
+    if not sys.stdin.isatty():
+        raise click.UsageError(
+            "--service is required in non-interactive mode. "
+            "Use 'ecs-doctor browse' for interactive selection."
+        )
+    try:
+        import questionary
+    except ImportError:
+        raise click.ClickException(
+            "--service not provided. Install interactive extras to select from a list:\n"
+            "  pip install 'ecs-doctor[interactive]'\n"
+            "Or pass --service explicitly."
+        )
+
+    from ecs_doctor.wizard import _list_services
+    console.print(f"[dim]Fetching services in [bold]{cluster}[/bold]…[/dim]")
+    services = _list_services(ecs_client, cluster)
+    if not services:
+        raise click.ClickException(f"No services found in cluster '{cluster}'.")
+
+    service = questionary.select("Select ECS service:", choices=services).ask()
+    if service is None:
+        raise click.Abort()
+    return service
 
 
 def _no_creds_error(output_json: bool) -> None:

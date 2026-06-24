@@ -1,92 +1,186 @@
-<div class="report">
+<div class="report"
+     data-cluster="{{ result.request.cluster | e }}"
+     data-service="{{ result.request.service | e }}"
+     data-region="{{ result.request.region | e }}">
+
+  {# ── Report header ─────────────────────────────────────── #}
+  <div class="card report-header">
+    <div>
+      <p class="report-title">{{ result.request.cluster }} <span class="dim">/</span> {{ result.request.service }}</p>
+      <div class="report-meta">
+        <span class="region-tag">{{ result.request.region }}</span>
+        <span class="dim text-xs">{{ result.duration_ms }}ms</span>
+      </div>
+    </div>
+  </div>
+
+  {# ── Tab nav ───────────────────────────────────────────── #}
+  <div class="tab-nav">
+    <button type="button" class="tab-btn active" onclick="switchTab('diagnosis', this)">Diagnosis</button>
+    {% if result.metrics %}
+    <button type="button" class="tab-btn" onclick="switchTab('metrics', this)">Metrics</button>
+    {% endif %}
+    {% if result.service_config or result.task_config %}
+    <button type="button" class="tab-btn" onclick="switchTab('config', this)">Config</button>
+    {% endif %}
+    <button type="button" class="tab-btn" onclick="switchTab('logs', this)">Live Logs</button>
+  </div>
+
+  {# ── Diagnosis tab ─────────────────────────────────────── #}
   {% set rc = result.root_cause %}
   {% set conf_pct = (rc.confidence * 100) | int %}
-  {% set color = "red" if rc.confidence >= 0.7 else ("orange" if rc.confidence >= 0.4 else "green") %}
+  {% set clvl = "high" if rc.confidence >= 0.7 else ("med" if rc.confidence >= 0.4 else "low") %}
 
-  <div class="root-cause card" style="border-left: 4px solid {{ color }}">
-    <h2>Root Cause <span class="badge" style="background:{{ color }}">{{ conf_pct }}% confidence</span></h2>
-    <p class="cause">{{ rc.cause }}</p>
-    <details>
-      <summary>Suggested Fix</summary>
-      <p>{{ rc.suggested_fix }}</p>
-    </details>
+  <div id="tab-diagnosis" class="tab-panel active">
+    <div class="card rc-{{ clvl }}">
+      <div class="rc-header">
+        <h3>Root Cause</h3>
+        <span class="badge conf-{{ clvl }}">{{ conf_pct }}% confidence</span>
+      </div>
+      <p class="cause">{{ rc.cause }}</p>
+      <div class="conf-track">
+        <div class="conf-fill conf-{{ clvl }}" style="--bar-w:{{ conf_pct }}%"></div>
+      </div>
+      <details class="fix-details">
+        <summary>Suggested Fix</summary>
+        <p>{{ rc.suggested_fix }}</p>
+      </details>
+    </div>
+
+    {% if rc.evidence %}
+    <div class="card">
+      <h3>Supporting Evidence</h3>
+      <table>
+        <thead>
+          <tr><th>Source</th><th>Type</th><th>Severity</th><th>Message</th></tr>
+        </thead>
+        <tbody>
+          {% for f in rc.evidence %}
+          <tr>
+            <td class="dim">{{ f.source }}</td>
+            <td>{{ f.type.value }}</td>
+            <td><span class="badge sev-{{ f.severity.value }}">{{ f.severity.value.upper() }}</span></td>
+            <td>{{ f.message }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
   </div>
 
+  {# ── Metrics tab ───────────────────────────────────────── #}
   {% if result.metrics %}
   {% set m = result.metrics %}
-  <div class="card metrics">
-    <h3>CloudWatch Metrics (last {{ m.lookback_hours }}h)</h3>
-    <table>
-      <tr><th>Metric</th><th>Average</th><th>Maximum</th></tr>
-      <tr>
-        <td>CPU Utilization</td>
-        <td>{% if m.cpu_avg_percent is not none %}{{ "%.1f"|format(m.cpu_avg_percent) }}%{% else %}—{% endif %}</td>
-        <td>{% if m.cpu_max_percent is not none %}{{ "%.1f"|format(m.cpu_max_percent) }}%{% else %}—{% endif %}</td>
-      </tr>
-      <tr>
-        <td>Memory Utilization</td>
-        <td>{% if m.memory_avg_percent is not none %}{{ "%.1f"|format(m.memory_avg_percent) }}%{% else %}—{% endif %}</td>
-        <td>{% if m.memory_max_percent is not none %}{{ "%.1f"|format(m.memory_max_percent) }}%{% else %}—{% endif %}</td>
-      </tr>
-    </table>
+  <div id="tab-metrics" class="tab-panel">
+    <div class="card">
+      <h3>CloudWatch Metrics <span class="dim card-sub">last {{ m.lookback_hours }}h</span></h3>
+      <div class="metrics-grid">
+
+        {% for metric_name, avg_val, max_val in [
+            ("CPU Utilization",    m.cpu_avg_percent,    m.cpu_max_percent),
+            ("Memory Utilization", m.memory_avg_percent, m.memory_max_percent)
+        ] %}
+        <div class="metric-row">
+          <div class="metric-label">{{ metric_name }}</div>
+          <div class="metric-bars">
+            {% for row_label, val in [("Avg", avg_val), ("Max", max_val)] %}
+            {% set bar_cls = "bar-high" if val is not none and val > 80 else ("bar-med" if val is not none and val > 60 else "bar-low") %}
+            <div class="metric-bar-row">
+              <span class="metric-bar-label">{{ row_label }}</span>
+              <div class="metric-track">
+                {% if val is not none %}
+                <div class="metric-fill {{ bar_cls }}" style="--bar-w:{{ val | round(1) }}%"></div>
+                {% endif %}
+              </div>
+              <span class="metric-pct">
+                {% if val is not none %}{{ "%.1f"|format(val) }}%{% else %}—{% endif %}
+              </span>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+        {% endfor %}
+
+      </div>
+    </div>
   </div>
   {% endif %}
 
-  {% if result.service_config %}
-  {% set sc = result.service_config %}
-  <div class="card service-config">
-    <h3>Service Configuration</h3>
-    <dl>
-      <dt>Desired / Running / Pending</dt><dd>{{ sc.desired_count }} / {{ sc.running_count }} / {{ sc.pending_count }}</dd>
-      <dt>Launch Type</dt><dd>{{ sc.launch_type or "capacity provider" }}{% if sc.platform_version %} ({{ sc.platform_version }}){% endif %}</dd>
-      <dt>Deployment</dt><dd>min {{ sc.deployment_config.minimum_healthy_percent }}% / max {{ sc.deployment_config.maximum_percent }}% · Circuit breaker: {{ "on" if sc.deployment_config.circuit_breaker_enabled else "off" }}</dd>
-      {% if sc.health_check_grace_period_seconds is not none %}
-      <dt>Health Check Grace Period</dt><dd>{{ sc.health_check_grace_period_seconds }}s</dd>
-      {% endif %}
-    </dl>
+  {# ── Config tab ────────────────────────────────────────── #}
+  {% if result.service_config or result.task_config %}
+  <div id="tab-config" class="tab-panel">
+
+    {% if result.service_config %}
+    {% set sc = result.service_config %}
+    <div class="card">
+      <h3>Service Configuration</h3>
+      <div class="stat-grid">
+        <div class="stat-item">
+          <span class="stat-label">Desired / Running / Pending</span>
+          <span class="stat-value">{{ sc.desired_count }} / {{ sc.running_count }} / {{ sc.pending_count }}</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Launch Type</span>
+          <span class="stat-value">{{ sc.launch_type or "capacity provider" }}{% if sc.platform_version %} ({{ sc.platform_version }}){% endif %}</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Min Healthy / Max</span>
+          <span class="stat-value">{{ sc.deployment_config.minimum_healthy_percent }}% / {{ sc.deployment_config.maximum_percent }}%</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Circuit Breaker</span>
+          <span class="stat-value">{{ "Enabled" if sc.deployment_config.circuit_breaker_enabled else "Disabled" }}</span>
+        </div>
+        {% if sc.health_check_grace_period_seconds is not none %}
+        <div class="stat-item">
+          <span class="stat-label">Health Check Grace Period</span>
+          <span class="stat-value">{{ sc.health_check_grace_period_seconds }}s</span>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+
+    {% if result.task_config %}
+    {% set tc = result.task_config %}
+    <div class="card">
+      <h3>Task Definition <span class="dim card-sub">{{ tc.family }}:{{ tc.revision }}</span></h3>
+      <p class="meta">CPU: {{ tc.cpu }} &middot; Memory: {{ tc.memory }} MiB &middot; Network: {{ tc.network_mode }}</p>
+      <table>
+        <thead>
+          <tr><th>Container</th><th>Image</th><th>CPU</th><th>Memory</th><th>Log Group</th></tr>
+        </thead>
+        <tbody>
+          {% for c in tc.containers %}
+          <tr>
+            <td>{{ c.name }}</td>
+            <td class="image">{{ c.image.split("/")[-1] }}</td>
+            <td>{{ c.cpu }}</td>
+            <td>{{ c.memory or c.memory_reservation or "—" }}</td>
+            <td class="dim">{{ c.log_group or "—" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
   </div>
   {% endif %}
 
-  {% if result.task_config %}
-  {% set tc = result.task_config %}
-  <div class="card task-config">
-    <h3>Task Definition — {{ tc.family }}:{{ tc.revision }}</h3>
-    <p class="meta">CPU: {{ tc.cpu }} · Memory: {{ tc.memory }} MiB · Network: {{ tc.network_mode }}</p>
-    <table>
-      <tr><th>Container</th><th>Image</th><th>CPU</th><th>Memory</th><th>Log Group</th></tr>
-      {% for c in tc.containers %}
-      <tr>
-        <td>{{ c.name }}</td>
-        <td class="image">{{ c.image.split("/")[-1] }}</td>
-        <td>{{ c.cpu }}</td>
-        <td>{{ c.memory or c.memory_reservation or "—" }}</td>
-        <td class="dim">{{ c.log_group or "—" }}</td>
-      </tr>
-      {% endfor %}
-    </table>
+  {# ── Live Logs tab ─────────────────────────────────────── #}
+  <div id="tab-logs" class="tab-panel">
+    <div class="card">
+      <div class="log-header">
+        <h3>Live Log Stream</h3>
+        <div class="log-controls">
+          <span id="stream-status" class="stream-status">Not started</span>
+          <button type="button" id="stream-toggle" class="btn-sm" onclick="toggleStream()">Start Streaming</button>
+        </div>
+      </div>
+      <pre id="log-output"></pre>
+    </div>
   </div>
-  {% endif %}
 
-  {% if rc.evidence %}
-  <div class="card evidence">
-    <h3>Supporting Evidence</h3>
-    <table>
-      <tr><th>Source</th><th>Type</th><th>Severity</th><th>Message</th></tr>
-      {% for f in rc.evidence %}
-      <tr class="sev-{{ f.severity.value }}">
-        <td>{{ f.source }}</td>
-        <td>{{ f.type.value }}</td>
-        <td><span class="badge sev-{{ f.severity.value }}">{{ f.severity.value.upper() }}</span></td>
-        <td>{{ f.message }}</td>
-      </tr>
-      {% endfor %}
-    </table>
-  </div>
-  {% endif %}
-
-  <p class="meta">Diagnosis completed in {{ result.duration_ms }}ms ·
-    <button onclick="startStream('{{ result.request.cluster }}', '{{ result.request.service }}', '{{ result.request.region }}')">
-      Stream live logs
-    </button>
-  </p>
 </div>
