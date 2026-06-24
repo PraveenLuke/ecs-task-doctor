@@ -105,13 +105,13 @@ async def diagnose_html(
             'or an IAM instance/task role.</p>'
             '</div>'
         )
-    except Exception as exc:
+    except Exception:
         return HTMLResponse(
-            f'<div class="card error-card"><h3>Diagnosis failed</h3>'
-            f'<p><code>{exc}</code></p>'
-            f'<p class="dim">Check that the cluster and service names are correct and '
-            f'that your credentials have the necessary ECS permissions.</p>'
-            f'</div>'
+            '<div class="card error-card"><h3>Diagnosis failed</h3>'
+            '<p>An internal error occurred while running diagnosis.</p>'
+            '<p class="dim">Check that the cluster and service names are correct and '
+            'that your credentials have the necessary ECS permissions.</p>'
+            '</div>'
         )
 
     return templates.TemplateResponse(request, "report.html", {"result": result})
