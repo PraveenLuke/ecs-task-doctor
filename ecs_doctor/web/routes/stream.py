@@ -92,8 +92,8 @@ async def stream_logs(
 
         except GeneratorExit:
             pass
-        except Exception as exc:  # noqa: BLE001
-            yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+        except Exception:  # noqa: BLE001
+            yield f"data: {json.dumps({'error': 'An error occurred while streaming logs.'})}\n\n"
 
     return StreamingResponse(
         event_generator(),

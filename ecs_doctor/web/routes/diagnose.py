@@ -131,6 +131,6 @@ async def diagnose_json(
     except NoCredentialsError as exc:
         raise HTTPException(status_code=401, detail="No AWS credentials found.") from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail="Diagnosis failed due to an internal error.") from exc
 
     return JSONResponse(content=json.loads(json.dumps(to_json_safe(result), default=str)))

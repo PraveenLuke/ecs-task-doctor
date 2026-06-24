@@ -10,6 +10,8 @@ jobs:
   test:
     name: Test before release
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
       - uses: actions/checkout@v5
@@ -30,6 +32,8 @@ jobs:
     name: Build package
     runs-on: ubuntu-latest
     needs: test
+    permissions:
+      contents: read
 
     steps:
       - uses: actions/checkout@v5
